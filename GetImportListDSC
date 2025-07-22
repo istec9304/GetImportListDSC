@@ -1,5 +1,5 @@
 # =============================================
-# 📌 엑셀 → SQL VALUES 변환기
+# 📌 임포트체커 (v250723)
 # 작성자: 서기대
 # 목적: 수용가 단말기 등록용 엑셀 파일을 SQL VALUES 구문으로 자동 변환
 # 주요 기능:
@@ -8,12 +8,16 @@
 #   - 성공/실패 항목 수 집계
 #   - 수용가번호 목록 및 SQL VALUES 구문 출력
 #   - 긴 텍스트를 가로/세로 스크롤 가능하게 출력
+#   - 유효성 검사 CASE 넘버링 지원
+#   - 프로그램 버전: v250723
 # =============================================
 
+import gspread
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from datetime import datetime
+from tkinter import ttk
 
 # 📌 엑셀 컬럼명 정의 (20개 항목)
 COLUMNS = [
@@ -34,11 +38,26 @@ def generate_sql_from_excel():
         messagebox.showwarning("파일 선택", "파일이 선택되지 않았습니다.")
         return
 
+    # ▶ 콤보박스에서 선택된 계정명의 수용가번호길이 가져오기
+    idx = site_combobox.current()
+    if idx < 0:
+        messagebox.showwarning("계정명 선택", "먼저 계정명을 선택하세요.")
+        return
+    try:
+        selected_num_len = int(filtered_df.iloc[idx]['수용가번호길이'])
+    except Exception:
+        messagebox.showerror("계정명 오류", "선택한 계정의 수용가번호길이 값이 올바르지 않습니다.")
+        return
+
     try:
         # 엑셀 데이터프레임 불러오기 및 공백 채움
         df = pd.read_excel(file_path, dtype=str).fillna('')
         df = df.iloc[:, 1:1+len(COLUMNS)]  # 첫 열 제외 후 20열만 선택
         df.columns = COLUMNS
+
+        # ▶ 중복 수용가번호 미리 집계
+        admin_no_counts = df['수용가번호'].value_counts()
+        duplicated_admin_nos = set(admin_no_counts[admin_no_counts > 1].index)
 
         values_list = []
         success_count = 0
@@ -46,25 +65,43 @@ def generate_sql_from_excel():
         success_admin_no_list = []  # 성공한 수용가번호 저장
 
         # 각 행 반복 처리
-        for idx, row in df.iterrows():
+        validation_cases = [
+            ("수용가번호 길이 검사", lambda row: len(row['수용가번호']) == selected_num_len, "수용가번호 길이 불일치"),
+            ("수용가번호 중복 검사", lambda row: row['수용가번호'] not in duplicated_admin_nos, "수용가번호 중복"),
+            ("수용가 전화번호 길이 검사", lambda row: len(row['수용가 전화번호']) < 14, "수용가 전화번호 13자리 초과"),
+            
+        ]
+
+        for idx_row, row in df.iterrows():
             try:
-                # SQL용 튜플 값 생성
+                for case_num, (desc, check_func, err_msg) in enumerate(validation_cases, 1):
+                    if not check_func(row):
+                        raise ValueError(f"[CASE #{case_num}] {err_msg} (값: {row['수용가번호']})")
+                # 숫자 변환이 필요한 컬럼에 대해 값이 비어있으면 예외 발생
+                def safe_float(val, col):
+                    if val == '':
+                        raise ValueError(f"{col} 값이 비어있음")
+                    return float(val)
+                def safe_int(val, col):
+                    if val == '':
+                        raise ValueError(f"{col} 값이 비어있음")
+                    return int(val)
                 values = (
                     row['수용가명'],
                     row['수용가번호'],
                     row['구주소'],
                     row['신주소'],
-                    float(row['경도']),
-                    float(row['위도']),
+                    safe_float(row['경도'], '경도'),
+                    safe_float(row['위도'], '위도'),
                     row['업종'],
                     SITE_SQ,
                     COMPANY_SQ,
                     row['수용가 전화번호'],
                     row['수용가 대상 년도'],
                     row['검침원'],
-                    int(row['검침일']),
+                    safe_int(row['검침일'], '검침일'),
                     row['계량기번호'],
-                    int(row['구경']),
+                    safe_int(row['구경'], '구경'),
                     row['통신'],
                     row['단말 부번호'],
                     row['단말 주번호'],
@@ -77,7 +114,7 @@ def generate_sql_from_excel():
                 success_admin_no_list.append(row['수용가번호'])
                 success_count += 1
             except Exception as e:
-                values_list.append(f"-- [ERROR #{idx+1}] {e}")
+                values_list.append(f"-- [ERROR #{idx_row+1}] {e}")
                 fail_count += 1
 
         # 결과 출력창 초기화 및 결과 삽입
@@ -99,12 +136,69 @@ def generate_sql_from_excel():
         messagebox.showerror("에러 발생", str(e))
 
 
+def read_google_sheet(sheet_url, credentials_path, worksheet_name):
+    gc = gspread.service_account(filename=credentials_path)
+    sh = gc.open_by_url(sheet_url)
+    worksheet = sh.worksheet(worksheet_name)
+    all_values = worksheet.get_all_values()
+    # 첫 행에서 원하는 컬럼의 인덱스 찾기
+    header = all_values[0]
+    idx_account = header.index('계정명')
+    idx_service = header.index('서비스코드')
+    idx_len = header.index('수용가번호길이')
+    idx_struct = header.index('고객번호구조')
+    # 원하는 컬럼만 추출
+    data = [
+        [row[idx_account], row[idx_service], row[idx_len], row[idx_struct]]
+        for row in all_values[1:]
+        if row[idx_account] and row[idx_service]
+    ]
+    df = pd.DataFrame(data, columns=['계정명', '서비스코드', '수용가번호길이', '고객번호구조'])
+    return df
+
+# 사용 예시
+sheet_url = "https://docs.google.com/spreadsheets/d/10XO7o99fYr4e_I_etJF3_eCFa2_dsDs2egSWeu1GAls/edit#gid=679649875"
+credentials_path = r"C:\제품등록\gcp9304-4410543fedf2.json"
+worksheet_name = "IN형식"
+
+df = read_google_sheet(sheet_url, credentials_path, worksheet_name)
+
+# "계정명"과 "서비스코드" 컬럼만 출력 (디버그용)
+# print(df[['계정명', '서비스코드']])
+
 # =====================
 # 📌 GUI 구성 (Tkinter)
 # =====================
 window = tk.Tk()
-window.title("엑셀 → SQL VALUES 변환기")
+window.title("임포트체커 (v240607)")
 window.geometry("1000x600")
+
+# ▶ 계정명 콤보박스 프레임
+site_frame = tk.Frame(window)
+site_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+site_label = tk.Label(site_frame, text="계정명 선택:")
+site_label.pack(side=tk.LEFT)
+
+exclude_accounts = ['나라장터', '농촌공사', '로우리스', '']
+filtered_df = df[~df['계정명'].isin(exclude_accounts)].copy()
+filtered_df = filtered_df.sort_values('계정명').reset_index(drop=True)
+site_combobox = ttk.Combobox(site_frame, values=list(filtered_df['계정명']), state="readonly")
+site_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+# 계정명 선택 시 4개 컬럼 정보 팝업
+def on_site_select(event):
+    idx = site_combobox.current()
+    if idx >= 0:
+        account_name = filtered_df.iloc[idx]['계정명']
+        service_code = filtered_df.iloc[idx]['서비스코드']
+        num_len = filtered_df.iloc[idx]['수용가번호길이']
+        struct = filtered_df.iloc[idx]['고객번호구조']
+        messagebox.showinfo(
+            "선택한 계정",
+            f"계정명: {account_name}\n서비스코드: {service_code}\n수용가번호길이: {num_len}\n고객번호구조: {struct}"
+        )
+site_combobox.bind('<<ComboboxSelected>>', on_site_select)
 
 # ▶ 버튼 구성
 btn = tk.Button(window, text="엑셀 파일 선택 및 SQL 변환", command=generate_sql_from_excel)
@@ -131,3 +225,4 @@ y_scrollbar.config(command=result_text.yview)
 
 # ▶ 메인 루프 실행
 window.mainloop()
+
