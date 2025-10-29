@@ -24,14 +24,31 @@ import re
 import os
 import sys
 
-# 📌 PostgreSQL DB 연결 정보
-DB_CONFIG = {
-    'host': '10.241.240.219',
-    'port': 5433,
-    'database': 'mars_icbm',
-    'user': 'mars_icbm',
-    'password': ''  # 비밀번호는 실행 시 입력받거나 설정 필요
+# 📌 계정명별 DB 설정 (네트워크 정보가 있는 계정만 설정)
+ACCOUNT_DB_CONFIGS = {
+    '경북포항': {
+        'host': '10.241.240.219',
+        'port': 5433,
+        'database': 'mars_icbm',
+        'user': 'mars_icbm',
+        'password': 'mars@icbm'
+    },
+    '충남태안': {
+        'host': '211.53.249.251',
+        'port': 5438,
+        'database': 'mars_icbm',
+        'user': 'mars_icbm',
+        'password': 'mars@icbm'
+    }
 }
+
+# 📌 현재 사용 중인 DB 설정 가져오기
+def get_db_config(account_name=None):
+    """계정명에 따른 DB 설정 반환 (설정이 없으면 None)"""
+    if account_name and account_name in ACCOUNT_DB_CONFIGS:
+        return ACCOUNT_DB_CONFIGS[account_name].copy()
+    else:
+        return None  # 네트워크 정보가 없는 계정
 
 # 📌 엑셀 컬럼명 정의 (20개 항목)
 COLUMNS = [
@@ -49,9 +66,24 @@ def test_db_connection():
             messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
             return
         
-        # DB 연결 설정 (비밀번호 포함)
-        db_config = DB_CONFIG.copy()
-        db_config['password'] = db_password
+        # 선택된 계정명에 따른 DB 설정 가져오기
+        selected_name = site_entry.get().strip()
+        db_config = get_db_config(selected_name)
+        
+        if db_config is None:
+            messagebox.showerror(
+                "네트워크 정보 없음", 
+                f"'{selected_name}' 계정은 DB 네트워크 정보가 설정되어 있지 않습니다.\n\n설정된 계정:\n" + 
+                "\n".join([f"★ {name}" for name in ACCOUNT_DB_CONFIGS.keys()])
+            )
+            return
+        
+        # 비밀번호 설정 (입력된 비밀번호 우선, 없으면 계정 설정 비밀번호 사용)
+        if db_password:
+            db_config['password'] = db_password
+        elif not db_config.get('password'):
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
         
         # DB 연결
         connection = psycopg2.connect(**db_config)
@@ -71,14 +103,21 @@ def test_db_connection():
         """)
         tables = cursor.fetchall()
         
-        # 결과 출력
+        # 결과 출력 (로그 형식)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, "✅ DB 연결 성공!\n\n")
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"✅ DB 연결 테스트 - {current_time}\n")
+        result_text.insert(tk.END, f"Host: {db_config['host']}:{db_config['port']}\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
         result_text.insert(tk.END, f"📌 PostgreSQL 버전:\n{db_version[0]}\n\n")
         result_text.insert(tk.END, f"📌 테이블 목록 (최대 10개):\n")
         for idx, table in enumerate(tables, 1):
             result_text.insert(tk.END, f"{idx}. {table[0]}\n")
+        result_text.insert(tk.END, "\n")
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -91,7 +130,7 @@ def test_db_connection():
     except Exception as e:
         messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
 
-# 📌 매핑 조회 함수 (수용가번호 또는 단말번호 자동 감지, 다중 입력 지원)
+# 📌 매핑 조회 함수 (수용가번호 또는 단말주번호 자동 감지, 다중 입력 지원)
 def search_mapping():
     try:
         # 비밀번호 가져오기
@@ -103,7 +142,7 @@ def search_mapping():
         # 검색어 가져오기 (Text 위젯에서 가져오기)
         search_text = mapping_search_text.get("1.0", tk.END).strip()
         if not search_text:
-            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말주번호를 입력하세요.")
             return
         
         # 입력값 파싱 (줄바꿈, 쉼표, 공백으로 구분)
@@ -111,18 +150,33 @@ def search_mapping():
         search_values = [v.strip() for v in search_values if v.strip()]
         
         if not search_values:
-            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말주번호를 입력하세요.")
             return
         
-        # DB 연결 설정
-        db_config = DB_CONFIG.copy()
-        db_config['password'] = db_password
+        # 선택된 계정명에 따른 DB 설정 가져오기
+        selected_name = site_entry.get().strip()
+        db_config = get_db_config(selected_name)
+        
+        if db_config is None:
+            messagebox.showerror(
+                "네트워크 정보 없음", 
+                f"'{selected_name}' 계정은 DB 네트워크 정보가 설정되어 있지 않습니다.\n\n설정된 계정:\n" + 
+                "\n".join([f"★ {name}" for name in ACCOUNT_DB_CONFIGS.keys()])
+            )
+            return
+        
+        # 비밀번호 설정 (입력된 비밀번호 우선, 없으면 계정 설정 비밀번호 사용)
+        if db_password:
+            db_config['password'] = db_password
+        elif not db_config.get('password'):
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
         
         # DB 연결
         connection = psycopg2.connect(**db_config)
         cursor = connection.cursor()
         
-        # 입력값을 단말번호와 수용가번호로 분류
+        # 입력값을 단말주번호와 수용가번호로 분류
         device_nos = []
         admin_nos = []
         
@@ -132,51 +186,71 @@ def search_mapping():
             else:
                 admin_nos.append(value)
         
-        all_results = []
+        # 결과를 딕셔너리로 저장 (검색 키별로)
+        results_dict = {}
         
-        # 단말번호로 조회
+        # 단말주번호로 조회
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq
                 FROM public.tb_m1_cmap_device d
-                JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
-                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                LEFT JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
+                LEFT JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
                 WHERE d.dev_no IN ({placeholders});
             """
             cursor.execute(query, device_nos)
-            all_results.extend(cursor.fetchall())
+            for row in cursor.fetchall():
+                results_dict[row[1]] = row  # dev_no를 키로 사용
         
         # 수용가번호로 조회
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq
                 FROM public.tb_m1_cmap_device d
                 JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
                 WHERE c.admin_no IN ({placeholders});
             """
             cursor.execute(query, admin_nos)
-            all_results.extend(cursor.fetchall())
+            for row in cursor.fetchall():
+                results_dict[row[0]] = row  # admin_no를 키로 사용
         
-        # 결과 출력
+        # 입력 순서대로 결과 정렬
+        all_results = []
+        for search_val in search_values:
+            if search_val in results_dict:
+                all_results.append(results_dict[search_val])
+        
+        # 결과 출력 (로그 형식 - 누적)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"🔍 매핑 조회 결과 (총 {len(search_values)}개 검색)\n")
-        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
-        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
-        result_text.insert(tk.END, "="*80 + "\n\n")
+        # delete 제거 - 로그 누적
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"🔍 매핑 조회 결과 - {current_time}\n")
+        result_text.insert(tk.END, f"검색 항목: {len(search_values)}개 (단말주번호: {len(device_nos)}개, 수용가번호: {len(admin_nos)}개)\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
         
         if all_results:
             result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n")
-            result_text.insert(tk.END, f"{'수용가번호':<30} {'단말번호':<15}\n")
-            result_text.insert(tk.END, "-"*80 + "\n")
-            for admin_no, dev_no in all_results:
-                result_text.insert(tk.END, f"{admin_no:<30} {dev_no:<15}\n")
+            result_text.insert(tk.END, f"{'수용가번호':<20} {'단말부번호':<30} {'단말주번호':<15} {'point_sq':<10} {'cust_sq':<10}\n")
+            result_text.insert(tk.END, "-"*120 + "\n")
+            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq in all_results:
+                # NULL 값 처리
+                admin_no_str = admin_no if admin_no else 'NULL'
+                sub_dev_no_str = sub_dev_no if sub_dev_no else 'NULL'
+                point_sq_str = str(point_sq) if point_sq else 'NULL'
+                cust_sq_str = str(cust_sq) if cust_sq else 'NULL'
+                result_text.insert(tk.END, f"{admin_no_str:<20} {sub_dev_no_str:<30} {dev_no:<15} {point_sq_str:<10} {cust_sq_str:<10}\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
         
+        result_text.insert(tk.END, "\n")
+        # 자동 스크롤 (최신 로그로)
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -187,7 +261,7 @@ def search_mapping():
     except Exception as e:
         messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
 
-# 📌 매핑해제 함수 (단말번호와 수용가번호 연결 해제)
+# 📌 매핑해제 함수 (단말주번호와 수용가번호 연결 해제)
 def unlink_mapping():
     try:
         # 비밀번호 가져오기
@@ -199,7 +273,7 @@ def unlink_mapping():
         # 검색어 가져오기
         search_text = mapping_search_text.get("1.0", tk.END).strip()
         if not search_text:
-            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말주번호를 입력하세요.")
             return
         
         # 입력값 파싱
@@ -207,22 +281,37 @@ def unlink_mapping():
         search_values = [v.strip() for v in search_values if v.strip()]
         
         if not search_values:
-            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말주번호를 입력하세요.")
             return
         
         # 확인 메시지
         if not messagebox.askyesno("매핑해제 확인", f"{len(search_values)}개의 매핑을 해제하시겠습니까?\n\npoint_sq를 NULL로 설정합니다."):
             return
         
-        # DB 연결 설정
-        db_config = DB_CONFIG.copy()
-        db_config['password'] = db_password
+        # 선택된 계정명에 따른 DB 설정 가져오기
+        selected_name = site_entry.get().strip()
+        db_config = get_db_config(selected_name)
+        
+        if db_config is None:
+            messagebox.showerror(
+                "네트워크 정보 없음", 
+                f"'{selected_name}' 계정은 DB 네트워크 정보가 설정되어 있지 않습니다.\n\n설정된 계정:\n" + 
+                "\n".join([f"★ {name}" for name in ACCOUNT_DB_CONFIGS.keys()])
+            )
+            return
+        
+        # 비밀번호 설정 (입력된 비밀번호 우선, 없으면 계정 설정 비밀번호 사용)
+        if db_password:
+            db_config['password'] = db_password
+        elif not db_config.get('password'):
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
         
         # DB 연결
         connection = psycopg2.connect(**db_config)
         cursor = connection.cursor()
         
-        # 입력값을 단말번호와 수용가번호로 분류
+        # 입력값을 단말주번호와 수용가번호로 분류
         device_nos = []
         admin_nos = []
         
@@ -237,7 +326,7 @@ def unlink_mapping():
         # 트리거 비활성화
         cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
         
-        # 단말번호로 매핑해제 (point_sq를 NULL로 설정)
+        # 단말주번호로 매핑해제 (point_sq를 NULL로 설정)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             
@@ -305,17 +394,18 @@ def unlink_mapping():
         # 변경사항 커밋
         connection.commit()
         
-        # 결과 출력
+        # 결과 출력 (로그 형식)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"🗑️ 매핑해제 완료\n")
-        result_text.insert(tk.END, "="*80 + "\n\n")
-        result_text.insert(tk.END, f"✅ {unlinked_count}개의 매핑이 해제되었습니다.\n\n")
-        result_text.insert(tk.END, f"📌 처리된 항목:\n")
-        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
-        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
-        result_text.insert(tk.END, f"\n💡 point_sq가 NULL로 설정되었습니다.\n")
-        result_text.insert(tk.END, f"💾 백업 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='UNLINK')\n")
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"🗑️ 매핑해제 완료 - {current_time}\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
+        result_text.insert(tk.END, f"✅ {unlinked_count}개의 매핑이 해제되었습니다.\n")
+        result_text.insert(tk.END, f"📌 처리된 항목: 단말주번호 {len(device_nos)}개, 수용가번호 {len(admin_nos)}개\n")
+        result_text.insert(tk.END, f"💡 point_sq → NULL, 백업 이력 저장 (his_cd='UNLINK')\n\n")
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -349,7 +439,7 @@ def create_mapping():
             messagebox.showwarning("입력 오류", "수용가번호-단말주번호를 입력하세요.\n예: 2-001302290000,01236564855")
             return
         
-        # 입력값 파싱 (수용가번호-단말번호 또는 수용가번호,단말번호 형식)
+        # 입력값 파싱 (수용가번호-단말주번호 또는 수용가번호,단말주번호 형식)
         lines = search_text.split('\n')
         mapping_pairs = []
         
@@ -364,7 +454,7 @@ def create_mapping():
             elif '-' in line and line.count('-') >= 2:  # 수용가번호에 이미 '-'가 있으므로 2개 이상일 때
                 # 마지막 '-'를 기준으로 분리
                 idx = line.rfind('-')
-                if idx > 0 and line[idx+1:].startswith('012'):  # 단말번호는 012로 시작
+                if idx > 0 and line[idx+1:].startswith('012'):  # 단말주번호는 012로 시작
                     parts = [line[:idx], line[idx+1:]]
                 else:
                     parts = line.split()
@@ -375,11 +465,11 @@ def create_mapping():
                 admin_no = parts[0].strip()
                 dev_no = parts[1].strip()
                 
-                # 단말번호 검증 (012로 시작하는 11자리)
+                # 단말주번호 검증 (012로 시작하는 11자리)
                 if dev_no.startswith('012') and len(dev_no) == 11:
                     mapping_pairs.append((admin_no, dev_no))
                 else:
-                    messagebox.showwarning("입력 오류", f"잘못된 단말번호: {dev_no}\n단말번호는 012로 시작하는 11자리여야 합니다.")
+                    messagebox.showwarning("입력 오류", f"잘못된 단말주번호: {dev_no}\n단말주번호는 012로 시작하는 11자리여야 합니다.")
                     return
         
         if not mapping_pairs:
@@ -390,9 +480,24 @@ def create_mapping():
         if not messagebox.askyesno("매핑 생성 확인", f"{len(mapping_pairs)}개의 매핑을 생성하시겠습니까?"):
             return
         
-        # DB 연결 설정
-        db_config = DB_CONFIG.copy()
-        db_config['password'] = db_password
+        # 선택된 계정명에 따른 DB 설정 가져오기
+        selected_name = site_entry.get().strip()
+        db_config = get_db_config(selected_name)
+        
+        if db_config is None:
+            messagebox.showerror(
+                "네트워크 정보 없음", 
+                f"'{selected_name}' 계정은 DB 네트워크 정보가 설정되어 있지 않습니다.\n\n설정된 계정:\n" + 
+                "\n".join([f"★ {name}" for name in ACCOUNT_DB_CONFIGS.keys()])
+            )
+            return
+        
+        # 비밀번호 설정 (입력된 비밀번호 우선, 없으면 계정 설정 비밀번호 사용)
+        if db_password:
+            db_config['password'] = db_password
+        elif not db_config.get('password'):
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
         
         # DB 연결
         connection = psycopg2.connect(**db_config)
@@ -401,7 +506,7 @@ def create_mapping():
         # 트리거 비활성화
         cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
         
-        # 1. 모든 단말번호가 매핑해제 상태인지 확인
+        # 1. 모든 단말주번호가 매핑해제 상태인지 확인
         dev_nos = [dev_no for _, dev_no in mapping_pairs]
         placeholders = ','.join(['%s'] * len(dev_nos))
         check_query = f"""
@@ -423,7 +528,7 @@ def create_mapping():
             mapped_list = "\n".join([f"  - {dev_no} (point_sq: {point_sq})" for dev_no, point_sq in already_mapped])
             messagebox.showerror(
                 "매핑 오류", 
-                f"다음 단말번호는 이미 매핑되어 있습니다:\n\n{mapped_list}\n\n먼저 매핑해제를 진행하세요."
+                f"다음 단말주번호는 이미 매핑되어 있습니다:\n\n{mapped_list}\n\n먼저 매핑해제를 진행하세요."
             )
             return
         
@@ -465,16 +570,20 @@ def create_mapping():
         # 변경사항 커밋
         connection.commit()
         
-        # 결과 출력
+        # 결과 출력 (로그 형식)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"✨ 매핑 생성 완료\n")
-        result_text.insert(tk.END, "="*80 + "\n\n")
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"✨ 매핑 생성 완료 - {current_time}\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
         result_text.insert(tk.END, f"✅ {created_count}개의 매핑이 생성되었습니다.\n\n")
         result_text.insert(tk.END, f"📌 생성된 매핑:\n")
         for admin_no, dev_no in mapping_pairs:
             result_text.insert(tk.END, f"   {admin_no} ← {dev_no}\n")
-        result_text.insert(tk.END, f"\n💾 매핑 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='CREATE')\n")
+        result_text.insert(tk.END, f"\n💾 백업 이력 저장 (his_cd='CREATE')\n\n")
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -505,7 +614,7 @@ def restore_mapping():
         # 검색어 가져오기
         search_text = mapping_search_text.get("1.0", tk.END).strip()
         if not search_text:
-            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말주번호를 입력하세요.")
             return
         
         # 입력값 파싱
@@ -513,22 +622,37 @@ def restore_mapping():
         search_values = [v.strip() for v in search_values if v.strip()]
         
         if not search_values:
-            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말주번호를 입력하세요.")
             return
         
         # 확인 메시지
         if not messagebox.askyesno("매핑원복 확인", f"{len(search_values)}개의 매핑을 백업에서 원복하시겠습니까?\n\n백업 테이블(tb_m1_cmap_device_back_his)에서 복원합니다."):
             return
         
-        # DB 연결 설정
-        db_config = DB_CONFIG.copy()
-        db_config['password'] = db_password
+        # 선택된 계정명에 따른 DB 설정 가져오기
+        selected_name = site_entry.get().strip()
+        db_config = get_db_config(selected_name)
+        
+        if db_config is None:
+            messagebox.showerror(
+                "네트워크 정보 없음", 
+                f"'{selected_name}' 계정은 DB 네트워크 정보가 설정되어 있지 않습니다.\n\n설정된 계정:\n" + 
+                "\n".join([f"★ {name}" for name in ACCOUNT_DB_CONFIGS.keys()])
+            )
+            return
+        
+        # 비밀번호 설정 (입력된 비밀번호 우선, 없으면 계정 설정 비밀번호 사용)
+        if db_password:
+            db_config['password'] = db_password
+        elif not db_config.get('password'):
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
         
         # DB 연결
         connection = psycopg2.connect(**db_config)
         cursor = connection.cursor()
         
-        # 입력값을 단말번호와 수용가번호로 분류
+        # 입력값을 단말주번호와 수용가번호로 분류
         device_nos = []
         admin_nos = []
         
@@ -543,7 +667,7 @@ def restore_mapping():
         # 트리거 비활성화
         cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
         
-        # 단말번호로 백업에서 복원 (가장 최근 이력 사용)
+        # 단말주번호로 백업에서 복원 (가장 최근 이력 사용)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             
@@ -626,18 +750,18 @@ def restore_mapping():
         # 변경사항 커밋
         connection.commit()
         
-        # 결과 출력
+        # 결과 출력 (로그 형식)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"🔄 매핑원복 완료 (백업 이력에서 복원)\n")
-        result_text.insert(tk.END, "="*80 + "\n\n")
-        result_text.insert(tk.END, f"✅ {restored_count}개의 매핑이 원복되었습니다.\n\n")
-        result_text.insert(tk.END, f"📌 처리된 항목:\n")
-        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
-        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
-        result_text.insert(tk.END, f"\n💡 백업 이력 테이블(tb_m1_cmap_device_back_his)에서\n")
-        result_text.insert(tk.END, f"   가장 최근 이력의 point_sq가 복원되었습니다.\n")
-        result_text.insert(tk.END, f"💾 복원 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='RESTORE')\n")
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"🔄 매핑원복 완료 - {current_time}\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
+        result_text.insert(tk.END, f"✅ {restored_count}개의 매핑이 원복되었습니다.\n")
+        result_text.insert(tk.END, f"📌 처리된 항목: 단말주번호 {len(device_nos)}개, 수용가번호 {len(admin_nos)}개\n")
+        result_text.insert(tk.END, f"💡 백업 테이블에서 point_sq 복원, 백업 이력 저장 (his_cd='RESTORE')\n\n")
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -761,19 +885,27 @@ def generate_sql_from_excel():
                 values_list.append(f"-- [ERROR #{idx_row+1}] {e}")
                 fail_count += 1
 
-        # 결과 출력창 초기화 및 결과 삽입
+        # 결과 출력 (로그 형식)
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         result_text.config(state=tk.NORMAL)
-        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"\n{'='*120}\n")
+        result_text.insert(tk.END, f"📄 엑셀 변환 완료 - {current_time}\n")
+        result_text.insert(tk.END, f"파일: {file_path}\n")
+        result_text.insert(tk.END, f"{'='*120}\n\n")
+
+        # ✅ 성공/실패 통계 출력
+        result_text.insert(tk.END, f"-- 총 {len(df)}개 중 {success_count}개 성공, {fail_count}개 실패\n\n")
 
         # ✅ 수용가번호 목록 먼저 출력
         result_text.insert(tk.END, "-- ✅ 임포트전 조회할 수용가목록\n")
         result_text.insert(tk.END, ",\n".join(f"'{x}'" for x in success_admin_no_list) + "\n\n")
 
-        # ✅ 성공/실패 통계 출력
-        result_text.insert(tk.END, f"-- 총 {len(df)}개 중 {success_count}개 성공, {fail_count}개 실패\n\n")
-
         # ✅ SQL VALUES 출력
         result_text.insert(tk.END, ",\n".join(values_list))
+        result_text.insert(tk.END, "\n\n")
+        result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
 
     except Exception as e:
@@ -925,7 +1057,7 @@ df = read_google_sheet(sheet_url, credentials_path, worksheet_name)
 # 📌 GUI 구성 (Tkinter)
 # =====================
 window = tk.Tk()
-window.title("임포트체커 (v240607)")
+window.title("임포트체커 (v251029)")
 window.geometry("1000x600")
 
 # 아이콘 설정
@@ -952,6 +1084,11 @@ site_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 site_label = tk.Label(site_frame, text="계정명 선택:")
 site_label.pack(side=tk.LEFT)
 
+# DB 상태 표시 라벨 (계정명 옆에)
+default_db = ACCOUNT_DB_CONFIGS.get('경북포항', {'host': 'N/A', 'port': 'N/A'})
+db_status_label = tk.Label(window, text=f"🌐 현재 DB: {default_db['host']}:{default_db['port']} (경북포항)", fg='#4CAF50', font=('Arial', 9))
+db_status_label.pack(fill=tk.X, padx=10, pady=(5, 0))
+
 exclude_accounts = ['나라장터', '농촌공사', '로우리스', '']
 filtered_df = df[~df['계정명'].isin(exclude_accounts)].copy()
 filtered_df = filtered_df.sort_values('계정명').reset_index(drop=True)
@@ -972,7 +1109,7 @@ site_entry = tk.Entry(account_autocomplete_frame)
 site_entry.pack(fill=tk.X)
 
 # 자동완성 리스트박스 (처음엔 숨김)
-site_listbox = tk.Listbox(account_autocomplete_frame, height=8)
+site_listbox = tk.Listbox(account_autocomplete_frame, height=8, fg='black', selectbackground='#2196F3')
 site_listbox.pack_forget()  # 처음엔 숨김
 
 # 선택된 계정명 저장 변수
@@ -1011,13 +1148,21 @@ def update_autocomplete(event=None):
     if typed_text == '':
         # 입력이 비어있으면 전체 목록 표시
         for name in all_account_names:
-            site_listbox.insert(tk.END, name)
+            # 네트워크 정보가 있는 계정명은 ★ 마커 추가
+            if name in ACCOUNT_DB_CONFIGS:
+                site_listbox.insert(tk.END, f"★ {name}")
+            else:
+                site_listbox.insert(tk.END, name)
     else:
         # 입력된 텍스트를 포함하는 계정명만 필터링
         typed_lower = typed_text.lower()
         filtered = [name for name in all_account_names if typed_lower in name.lower()]
         for name in filtered:
-            site_listbox.insert(tk.END, name)
+            # 네트워크 정보가 있는 계정명은 ★ 마커 추가
+            if name in ACCOUNT_DB_CONFIGS:
+                site_listbox.insert(tk.END, f"★ {name}")
+            else:
+                site_listbox.insert(tk.END, name)
     
     # 필터링 결과가 있으면 리스트박스 표시
     if site_listbox.size() > 0:
@@ -1030,6 +1175,8 @@ def on_account_enter(event):
     if site_listbox.winfo_viewable() and site_listbox.curselection():
         # 리스트박스에서 선택된 항목
         selection = site_listbox.get(site_listbox.curselection())
+        # ★ 마커 제거
+        selection = selection.replace('★ ', '')
         site_entry.delete(0, tk.END)
         site_entry.insert(0, selection)
         selected_account.set(selection)
@@ -1037,6 +1184,8 @@ def on_account_enter(event):
     elif site_listbox.size() > 0:
         # 리스트박스 첫 번째 항목
         first_item = site_listbox.get(0)
+        # ★ 마커 제거
+        first_item = first_item.replace('★ ', '')
         site_entry.delete(0, tk.END)
         site_entry.insert(0, first_item)
         selected_account.set(first_item)
@@ -1047,11 +1196,18 @@ def on_listbox_select(event):
     """리스트박스에서 항목 클릭 시"""
     if site_listbox.curselection():
         selection = site_listbox.get(site_listbox.curselection())
+        # ★ 마커 제거
+        selection = selection.replace('★ ', '')
         site_entry.delete(0, tk.END)
         site_entry.insert(0, selection)
         selected_account.set(selection)
         site_listbox.pack_forget()
         site_entry.focus()
+        # 계정 정보 표시
+        window.after(100, show_account_info)
+        # DB 설정이 있는 계정만 자동 연결 테스트
+        if selection.replace('★ ', '') in ACCOUNT_DB_CONFIGS:
+            window.after(500, test_db_connection)
 
 def on_listbox_key(event):
     """리스트박스에서 키 입력 처리"""
@@ -1063,9 +1219,9 @@ def on_listbox_key(event):
         site_entry.focus()
         return 'break'
 
-# 계정명 변경 감지 (선택 시 정보 팝업)
+# 계정명 변경 감지 (선택 시 정보 팝업 및 DB 설정 변경)
 def show_account_info():
-    """선택된 계정명의 상세 정보 표시"""
+    """선택된 계정명의 상세 정보 표시 및 DB 설정 자동 변경"""
     selected_name = site_entry.get()
     if not selected_name:
         return
@@ -1077,17 +1233,51 @@ def show_account_info():
         service_code = matches.iloc[0]['서비스코드']
         num_len = matches.iloc[0]['수용가번호길이']
         struct = matches.iloc[0]['고객번호구조']
+        
+        # DB 설정 확인 및 표시
+        db_config = get_db_config(account_name)
+        
+        if db_config is None:
+            # 네트워크 정보가 없는 계정
+            db_info = f"\n\n[DB 설정]\n❌ 네트워크 정보 없음"
+            db_status_label.config(
+                text=f"⚠️ '{account_name}' - DB 네트워크 정보 없음",
+                fg='#F44336'
+            )
+        else:
+            # 네트워크 정보가 있는 계정
+            db_info = f"\n\n[DB 설정]\nHost: {db_config['host']}\nPort: {db_config['port']}"
+            if account_name == '충남태안':
+                db_status_label.config(
+                    text=f"🌐 현재 DB: {db_config['host']}:{db_config['port']} (충남태안)",
+                    fg='#FF5722'
+                )
+            elif account_name == '경북포항':
+                db_status_label.config(
+                    text=f"🌐 현재 DB: {db_config['host']}:{db_config['port']} (경북포항)",
+                    fg='#4CAF50'
+                )
+            else:
+                db_status_label.config(
+                    text=f"🌐 현재 DB: {db_config['host']}:{db_config['port']} ({account_name})",
+                    fg='#2196F3'
+                )
+        
         messagebox.showinfo(
             "선택한 계정",
-            f"계정명: {account_name}\n서비스코드: {service_code}\n수용가번호길이: {num_len}\n고객번호구조: {struct}"
+            f"계정명: {account_name}\n서비스코드: {service_code}\n수용가번호길이: {num_len}\n고객번호구조: {struct}{db_info}"
         )
 
-# Enter 키로 선택 시 정보 표시 추가
+# Enter 키로 선택 시 정보 표시 및 DB 연결 테스트 추가
 original_on_account_enter = on_account_enter
 def on_account_enter_with_info(event):
     result = original_on_account_enter(event)
     # Enter로 선택 완료 후 정보 표시
     window.after(100, show_account_info)
+    # DB 설정이 있는 계정만 자동 연결 테스트
+    selected_name = site_entry.get().strip()
+    if selected_name in ACCOUNT_DB_CONFIGS:
+        window.after(500, test_db_connection)
     return result
 
 # 이벤트 바인딩
@@ -1130,7 +1320,7 @@ db_password_entry.insert(0, "mars@icbm")  # 기본값 설정
 mapping_frame = tk.Frame(window)
 mapping_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
-mapping_label = tk.Label(mapping_frame, text="매핑 관리 입력창:\n  조회/해제/원복: 수용가번호 또는 단말번호\n  생성: 수용가번호,단말번호 (예: 2-001302290000,01236564855)")
+mapping_label = tk.Label(mapping_frame, text="매핑 관리 입력창:\n  조회/해제/원복: 수용가번호 또는 단말주번호\n  생성: 수용가번호,단말주번호 (예: 2-001302290000,01236564855)")
 mapping_label.pack(anchor=tk.W)
 
 mapping_input_frame = tk.Frame(mapping_frame)
@@ -1162,6 +1352,17 @@ mapping_restore_btn.pack(side=tk.LEFT, padx=5)
 # ▶ 버튼 구성
 button_frame = tk.Frame(window)
 button_frame.pack(pady=10)
+
+# 로그 초기화 함수
+def clear_log():
+    """결과 로그 초기화"""
+    result_text.config(state=tk.NORMAL)
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, f"📋 로그가 초기화되었습니다. - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    result_text.config(state=tk.DISABLED)
+
+clear_log_btn = tk.Button(button_frame, text="로그 초기화", command=clear_log, bg='#9E9E9E', fg='white', padx=10)
+clear_log_btn.pack(side=tk.LEFT, padx=5)
 
 db_test_btn = tk.Button(button_frame, text="DB 연결 테스트", command=test_db_connection, bg='#4CAF50', fg='white', padx=10)
 db_test_btn.pack(side=tk.LEFT, padx=5)
