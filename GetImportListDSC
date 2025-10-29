@@ -238,6 +238,20 @@ def unlink_mapping():
         # 단말번호로 매핑해제 (point_sq를 NULL로 설정)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
+            
+            # 1. 해제 전 상태를 백업 이력에 저장
+            backup_query = f"""
+                INSERT INTO public.tb_m1_cmap_device_back_his 
+                (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
+                SELECT dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, 
+                       CURRENT_TIMESTAMP, TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), 'UNLINK'
+                FROM public.tb_m1_cmap_device
+                WHERE dev_no IN ({placeholders})
+                AND point_sq IS NOT NULL;
+            """
+            cursor.execute(backup_query, device_nos)
+            
+            # 2. 매핑 해제
             query = f"""
                 UPDATE public.tb_m1_cmap_device
                 SET point_sq = NULL
@@ -249,6 +263,26 @@ def unlink_mapping():
         # 수용가번호로 매핑해제 (해당 수용가의 모든 단말 매핑 해제)
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
+            
+            # 1. 해제 전 상태를 백업 이력에 저장
+            backup_query = f"""
+                WITH point_to_delete AS (
+                    SELECT p.point_sq
+                    FROM public.tb_m1_info_point p
+                    JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                    WHERE c.admin_no IN ({placeholders})
+                )
+                INSERT INTO public.tb_m1_cmap_device_back_his 
+                (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
+                SELECT dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, 
+                       CURRENT_TIMESTAMP, TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), 'UNLINK'
+                FROM public.tb_m1_cmap_device
+                WHERE point_sq IN (SELECT point_sq FROM point_to_delete)
+                AND point_sq IS NOT NULL;
+            """
+            cursor.execute(backup_query, admin_nos)
+            
+            # 2. 매핑 해제
             query = f"""
                 WITH point_to_delete AS (
                     SELECT p.point_sq
@@ -279,6 +313,7 @@ def unlink_mapping():
         result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
         result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
         result_text.insert(tk.END, f"\n💡 point_sq가 NULL로 설정되었습니다.\n")
+        result_text.insert(tk.END, f"💾 백업 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='UNLINK')\n")
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
@@ -297,7 +332,7 @@ def unlink_mapping():
     except Exception as e:
         messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
 
-# 📌 매핑원복 함수 (백업 테이블에서 매핑 복원)
+# 📌 매핑원복 함수 (백업에서 원상태로 복원)
 def restore_mapping():
     try:
         # 비밀번호 가져오기
@@ -321,7 +356,7 @@ def restore_mapping():
             return
         
         # 확인 메시지
-        if not messagebox.askyesno("매핑원복 확인", f"{len(search_values)}개의 매핑을 원복하시겠습니까?\n\n백업 테이블에서 복원합니다."):
+        if not messagebox.askyesno("매핑원복 확인", f"{len(search_values)}개의 매핑을 백업에서 원복하시겠습니까?\n\n백업 테이블(tb_m1_cmap_device_back_his)에서 복원합니다."):
             return
         
         # DB 연결 설정
@@ -344,39 +379,88 @@ def restore_mapping():
         
         restored_count = 0
         
-        # 단말번호로 매핑원복 (백업 테이블에서 복원)
+        # 트리거 비활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
+        
+        # 단말번호로 백업에서 복원 (가장 최근 이력 사용)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
+            
+            # 1. 복원 실행
             query = f"""
-                INSERT INTO public.tb_m1_cmap_device (dev_no, point_sq, reg_dt)
-                SELECT dev_no, point_sq, reg_dt
-                FROM public.tb_m1_cmap_device_backup 
-                WHERE dev_no IN ({placeholders})
-                AND NOT EXISTS (
-                    SELECT 1 FROM public.tb_m1_cmap_device d 
-                    WHERE d.dev_no = tb_m1_cmap_device_backup.dev_no
-                );
+                WITH latest_backup AS (
+                    SELECT DISTINCT ON (dev_no) dev_no, point_sq
+                    FROM public.tb_m1_cmap_device_back_his
+                    WHERE dev_no IN ({placeholders})
+                    AND point_sq IS NOT NULL
+                    ORDER BY dev_no, his_dt DESC, upd_dt DESC
+                )
+                UPDATE public.tb_m1_cmap_device AS dev
+                SET point_sq = lb.point_sq
+                FROM latest_backup AS lb
+                WHERE dev.dev_no = lb.dev_no;
             """
             cursor.execute(query, device_nos)
             restored_count += cursor.rowcount
+            
+            # 2. 복원 후 상태를 백업 이력에 저장
+            backup_query = f"""
+                INSERT INTO public.tb_m1_cmap_device_back_his 
+                (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
+                SELECT dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, 
+                       CURRENT_TIMESTAMP, TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), 'RESTORE'
+                FROM public.tb_m1_cmap_device
+                WHERE dev_no IN ({placeholders})
+                AND point_sq IS NOT NULL;
+            """
+            cursor.execute(backup_query, device_nos)
         
-        # 수용가번호로 매핑원복
+        # 수용가번호로 백업에서 복원 (가장 최근 이력 사용)
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
+            
+            # 1. 복원 실행
             query = f"""
-                INSERT INTO public.tb_m1_cmap_device (dev_no, point_sq, reg_dt)
-                SELECT b.dev_no, b.point_sq, b.reg_dt
-                FROM public.tb_m1_cmap_device_backup b
-                JOIN public.tb_m1_info_point p ON b.point_sq = p.point_sq
-                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
-                WHERE c.admin_no IN ({placeholders})
-                AND NOT EXISTS (
-                    SELECT 1 FROM public.tb_m1_cmap_device d 
-                    WHERE d.dev_no = b.dev_no
-                );
+                WITH latest_backup AS (
+                    SELECT DISTINCT ON (bak.dev_no) bak.dev_no, bak.point_sq
+                    FROM public.tb_m1_cmap_device_back_his bak
+                    JOIN public.tb_m1_info_point p ON bak.point_sq = p.point_sq
+                    JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                    WHERE c.admin_no IN ({placeholders})
+                    AND bak.point_sq IS NOT NULL
+                    ORDER BY bak.dev_no, bak.his_dt DESC, bak.upd_dt DESC
+                )
+                UPDATE public.tb_m1_cmap_device AS dev
+                SET point_sq = lb.point_sq
+                FROM latest_backup AS lb
+                WHERE dev.dev_no = lb.dev_no;
             """
             cursor.execute(query, admin_nos)
             restored_count += cursor.rowcount
+            
+            # 2. 복원 후 상태를 백업 이력에 저장
+            backup_query = f"""
+                WITH latest_backup AS (
+                    SELECT DISTINCT ON (bak.dev_no) bak.dev_no
+                    FROM public.tb_m1_cmap_device_back_his bak
+                    JOIN public.tb_m1_info_point p ON bak.point_sq = p.point_sq
+                    JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                    WHERE c.admin_no IN ({placeholders})
+                    AND bak.point_sq IS NOT NULL
+                    ORDER BY bak.dev_no, bak.his_dt DESC, bak.upd_dt DESC
+                )
+                INSERT INTO public.tb_m1_cmap_device_back_his 
+                (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
+                SELECT dev.dev_no, dev.sub_dev_no, dev.point_sq, dev.company_sq, dev.ami_type, dev.ins_dt, 
+                       CURRENT_TIMESTAMP, TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), 'RESTORE'
+                FROM public.tb_m1_cmap_device dev
+                WHERE dev.dev_no IN (SELECT dev_no FROM latest_backup)
+                AND dev.point_sq IS NOT NULL;
+            """
+            cursor.execute(backup_query, admin_nos)
+        
+        # 트리거 활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
         
         # 변경사항 커밋
         connection.commit()
@@ -384,20 +468,29 @@ def restore_mapping():
         # 결과 출력
         result_text.config(state=tk.NORMAL)
         result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"🔄 매핑원복 완료\n")
+        result_text.insert(tk.END, f"🔄 매핑원복 완료 (백업 이력에서 복원)\n")
         result_text.insert(tk.END, "="*80 + "\n\n")
         result_text.insert(tk.END, f"✅ {restored_count}개의 매핑이 원복되었습니다.\n\n")
         result_text.insert(tk.END, f"📌 처리된 항목:\n")
         result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
         result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
+        result_text.insert(tk.END, f"\n💡 백업 이력 테이블(tb_m1_cmap_device_back_his)에서\n")
+        result_text.insert(tk.END, f"   가장 최근 이력의 point_sq가 복원되었습니다.\n")
+        result_text.insert(tk.END, f"💾 복원 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='RESTORE')\n")
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
         connection.close()
         
-        messagebox.showinfo("매핑원복 완료", f"{restored_count}개의 매핑이 원복되었습니다.")
+        messagebox.showinfo("매핑원복 완료", f"{restored_count}개의 매핑이 백업에서 원복되었습니다.")
         
     except Error as e:
+        # 에러 발생 시 트리거 재활성화 시도
+        try:
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            connection.commit()
+        except:
+            pass
         messagebox.showerror("DB 쿼리 오류", f"데이터베이스 쿼리 실패:\n{e}")
     except Exception as e:
         messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
