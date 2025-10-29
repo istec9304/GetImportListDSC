@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 임포트체커 디버그",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/GetImportListDSC",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "${command:python.interpreterPath}"
+        },
+        {
+            "name": "Python: 현재 파일 디버그",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
+
