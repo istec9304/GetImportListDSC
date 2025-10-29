@@ -18,6 +18,18 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from datetime import datetime
 from tkinter import ttk
+import psycopg2
+from psycopg2 import Error
+import re
+
+# 📌 PostgreSQL DB 연결 정보
+DB_CONFIG = {
+    'host': '10.241.240.219',
+    'port': 5433,
+    'database': 'mars_icbm',
+    'user': 'mars_icbm',
+    'password': ''  # 비밀번호는 실행 시 입력받거나 설정 필요
+}
 
 # 📌 엑셀 컬럼명 정의 (20개 항목)
 COLUMNS = [
@@ -25,6 +37,370 @@ COLUMNS = [
     '블록', '수용가 전화번호', '수용가 대상 년도', '검침원', '검침일', '계량기번호',
     '구경', '통신', '단말 부번호', '단말 주번호', '단말 회사', '단말 설치일'
 ]
+
+# 📌 DB 연결 테스트 및 간단한 쿼리 실행
+def test_db_connection():
+    try:
+        # 비밀번호 가져오기
+        db_password = db_password_entry.get()
+        if not db_password:
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
+        
+        # DB 연결 설정 (비밀번호 포함)
+        db_config = DB_CONFIG.copy()
+        db_config['password'] = db_password
+        
+        # DB 연결
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+        
+        # 간단한 테스트 쿼리
+        cursor.execute("SELECT version();")
+        db_version = cursor.fetchone()
+        
+        # 테이블 목록 조회
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            ORDER BY table_name 
+            LIMIT 10;
+        """)
+        tables = cursor.fetchall()
+        
+        # 결과 출력
+        result_text.config(state=tk.NORMAL)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, "✅ DB 연결 성공!\n\n")
+        result_text.insert(tk.END, f"📌 PostgreSQL 버전:\n{db_version[0]}\n\n")
+        result_text.insert(tk.END, f"📌 테이블 목록 (최대 10개):\n")
+        for idx, table in enumerate(tables, 1):
+            result_text.insert(tk.END, f"{idx}. {table[0]}\n")
+        result_text.config(state=tk.DISABLED)
+        
+        cursor.close()
+        connection.close()
+        
+        messagebox.showinfo("DB 연결 성공", "데이터베이스 연결에 성공했습니다!")
+        
+    except Error as e:
+        messagebox.showerror("DB 연결 오류", f"데이터베이스 연결 실패:\n{e}")
+    except Exception as e:
+        messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
+
+# 📌 매핑 조회 함수 (수용가번호 또는 단말번호 자동 감지, 다중 입력 지원)
+def search_mapping():
+    try:
+        # 비밀번호 가져오기
+        db_password = db_password_entry.get()
+        if not db_password:
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
+        
+        # 검색어 가져오기 (Text 위젯에서 가져오기)
+        search_text = mapping_search_text.get("1.0", tk.END).strip()
+        if not search_text:
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # 입력값 파싱 (줄바꿈, 쉼표, 공백으로 구분)
+        search_values = re.split(r'[\n,\s]+', search_text)
+        search_values = [v.strip() for v in search_values if v.strip()]
+        
+        if not search_values:
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # DB 연결 설정
+        db_config = DB_CONFIG.copy()
+        db_config['password'] = db_password
+        
+        # DB 연결
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+        
+        # 입력값을 단말번호와 수용가번호로 분류
+        device_nos = []
+        admin_nos = []
+        
+        for value in search_values:
+            if value.startswith('012') and len(value) == 11:
+                device_nos.append(value)
+            else:
+                admin_nos.append(value)
+        
+        all_results = []
+        
+        # 단말번호로 조회
+        if device_nos:
+            placeholders = ','.join(['%s'] * len(device_nos))
+            query = f"""
+                SELECT c.admin_no, d.dev_no
+                FROM public.tb_m1_cmap_device d
+                JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
+                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                WHERE d.dev_no IN ({placeholders});
+            """
+            cursor.execute(query, device_nos)
+            all_results.extend(cursor.fetchall())
+        
+        # 수용가번호로 조회
+        if admin_nos:
+            placeholders = ','.join(['%s'] * len(admin_nos))
+            query = f"""
+                SELECT c.admin_no, d.dev_no
+                FROM public.tb_m1_cmap_device d
+                JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
+                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                WHERE c.admin_no IN ({placeholders});
+            """
+            cursor.execute(query, admin_nos)
+            all_results.extend(cursor.fetchall())
+        
+        # 결과 출력
+        result_text.config(state=tk.NORMAL)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"🔍 매핑 조회 결과 (총 {len(search_values)}개 검색)\n")
+        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
+        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
+        result_text.insert(tk.END, "="*80 + "\n\n")
+        
+        if all_results:
+            result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n")
+            result_text.insert(tk.END, f"{'수용가번호':<30} {'단말번호':<15}\n")
+            result_text.insert(tk.END, "-"*80 + "\n")
+            for admin_no, dev_no in all_results:
+                result_text.insert(tk.END, f"{admin_no:<30} {dev_no:<15}\n")
+        else:
+            result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
+        
+        result_text.config(state=tk.DISABLED)
+        
+        cursor.close()
+        connection.close()
+        
+    except Error as e:
+        messagebox.showerror("DB 쿼리 오류", f"데이터베이스 쿼리 실패:\n{e}")
+    except Exception as e:
+        messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
+
+# 📌 매핑해제 함수 (단말번호와 수용가번호 연결 해제)
+def unlink_mapping():
+    try:
+        # 비밀번호 가져오기
+        db_password = db_password_entry.get()
+        if not db_password:
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
+        
+        # 검색어 가져오기
+        search_text = mapping_search_text.get("1.0", tk.END).strip()
+        if not search_text:
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # 입력값 파싱
+        search_values = re.split(r'[\n,\s]+', search_text)
+        search_values = [v.strip() for v in search_values if v.strip()]
+        
+        if not search_values:
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # 확인 메시지
+        if not messagebox.askyesno("매핑해제 확인", f"{len(search_values)}개의 매핑을 해제하시겠습니까?\n\npoint_sq를 NULL로 설정합니다."):
+            return
+        
+        # DB 연결 설정
+        db_config = DB_CONFIG.copy()
+        db_config['password'] = db_password
+        
+        # DB 연결
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+        
+        # 입력값을 단말번호와 수용가번호로 분류
+        device_nos = []
+        admin_nos = []
+        
+        for value in search_values:
+            if value.startswith('012') and len(value) == 11:
+                device_nos.append(value)
+            else:
+                admin_nos.append(value)
+        
+        unlinked_count = 0
+        
+        # 트리거 비활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
+        
+        # 단말번호로 매핑해제 (point_sq를 NULL로 설정)
+        if device_nos:
+            placeholders = ','.join(['%s'] * len(device_nos))
+            query = f"""
+                UPDATE public.tb_m1_cmap_device
+                SET point_sq = NULL
+                WHERE dev_no IN ({placeholders});
+            """
+            cursor.execute(query, device_nos)
+            unlinked_count += cursor.rowcount
+        
+        # 수용가번호로 매핑해제 (해당 수용가의 모든 단말 매핑 해제)
+        if admin_nos:
+            placeholders = ','.join(['%s'] * len(admin_nos))
+            query = f"""
+                WITH point_to_delete AS (
+                    SELECT p.point_sq
+                    FROM public.tb_m1_info_point p
+                    JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                    WHERE c.admin_no IN ({placeholders})
+                )
+                UPDATE public.tb_m1_cmap_device
+                SET point_sq = NULL
+                WHERE point_sq IN (SELECT point_sq FROM point_to_delete);
+            """
+            cursor.execute(query, admin_nos)
+            unlinked_count += cursor.rowcount
+        
+        # 트리거 활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+        
+        # 변경사항 커밋
+        connection.commit()
+        
+        # 결과 출력
+        result_text.config(state=tk.NORMAL)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"🗑️ 매핑해제 완료\n")
+        result_text.insert(tk.END, "="*80 + "\n\n")
+        result_text.insert(tk.END, f"✅ {unlinked_count}개의 매핑이 해제되었습니다.\n\n")
+        result_text.insert(tk.END, f"📌 처리된 항목:\n")
+        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
+        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
+        result_text.insert(tk.END, f"\n💡 point_sq가 NULL로 설정되었습니다.\n")
+        result_text.config(state=tk.DISABLED)
+        
+        cursor.close()
+        connection.close()
+        
+        messagebox.showinfo("매핑해제 완료", f"{unlinked_count}개의 매핑이 해제되었습니다.")
+        
+    except Error as e:
+        # 에러 발생 시 트리거 재활성화 시도
+        try:
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            connection.commit()
+        except:
+            pass
+        messagebox.showerror("DB 쿼리 오류", f"데이터베이스 쿼리 실패:\n{e}")
+    except Exception as e:
+        messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
+
+# 📌 매핑원복 함수 (백업 테이블에서 매핑 복원)
+def restore_mapping():
+    try:
+        # 비밀번호 가져오기
+        db_password = db_password_entry.get()
+        if not db_password:
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
+        
+        # 검색어 가져오기
+        search_text = mapping_search_text.get("1.0", tk.END).strip()
+        if not search_text:
+            messagebox.showwarning("검색어 입력", "수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # 입력값 파싱
+        search_values = re.split(r'[\n,\s]+', search_text)
+        search_values = [v.strip() for v in search_values if v.strip()]
+        
+        if not search_values:
+            messagebox.showwarning("검색어 입력", "유효한 수용가번호 또는 단말번호를 입력하세요.")
+            return
+        
+        # 확인 메시지
+        if not messagebox.askyesno("매핑원복 확인", f"{len(search_values)}개의 매핑을 원복하시겠습니까?\n\n백업 테이블에서 복원합니다."):
+            return
+        
+        # DB 연결 설정
+        db_config = DB_CONFIG.copy()
+        db_config['password'] = db_password
+        
+        # DB 연결
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+        
+        # 입력값을 단말번호와 수용가번호로 분류
+        device_nos = []
+        admin_nos = []
+        
+        for value in search_values:
+            if value.startswith('012') and len(value) == 11:
+                device_nos.append(value)
+            else:
+                admin_nos.append(value)
+        
+        restored_count = 0
+        
+        # 단말번호로 매핑원복 (백업 테이블에서 복원)
+        if device_nos:
+            placeholders = ','.join(['%s'] * len(device_nos))
+            query = f"""
+                INSERT INTO public.tb_m1_cmap_device (dev_no, point_sq, reg_dt)
+                SELECT dev_no, point_sq, reg_dt
+                FROM public.tb_m1_cmap_device_backup 
+                WHERE dev_no IN ({placeholders})
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.tb_m1_cmap_device d 
+                    WHERE d.dev_no = tb_m1_cmap_device_backup.dev_no
+                );
+            """
+            cursor.execute(query, device_nos)
+            restored_count += cursor.rowcount
+        
+        # 수용가번호로 매핑원복
+        if admin_nos:
+            placeholders = ','.join(['%s'] * len(admin_nos))
+            query = f"""
+                INSERT INTO public.tb_m1_cmap_device (dev_no, point_sq, reg_dt)
+                SELECT b.dev_no, b.point_sq, b.reg_dt
+                FROM public.tb_m1_cmap_device_backup b
+                JOIN public.tb_m1_info_point p ON b.point_sq = p.point_sq
+                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                WHERE c.admin_no IN ({placeholders})
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.tb_m1_cmap_device d 
+                    WHERE d.dev_no = b.dev_no
+                );
+            """
+            cursor.execute(query, admin_nos)
+            restored_count += cursor.rowcount
+        
+        # 변경사항 커밋
+        connection.commit()
+        
+        # 결과 출력
+        result_text.config(state=tk.NORMAL)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"🔄 매핑원복 완료\n")
+        result_text.insert(tk.END, "="*80 + "\n\n")
+        result_text.insert(tk.END, f"✅ {restored_count}개의 매핑이 원복되었습니다.\n\n")
+        result_text.insert(tk.END, f"📌 처리된 항목:\n")
+        result_text.insert(tk.END, f"   - 단말번호: {len(device_nos)}개\n")
+        result_text.insert(tk.END, f"   - 수용가번호: {len(admin_nos)}개\n")
+        result_text.config(state=tk.DISABLED)
+        
+        cursor.close()
+        connection.close()
+        
+        messagebox.showinfo("매핑원복 완료", f"{restored_count}개의 매핑이 원복되었습니다.")
+        
+    except Error as e:
+        messagebox.showerror("DB 쿼리 오류", f"데이터베이스 쿼리 실패:\n{e}")
+    except Exception as e:
+        messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
 
 # 📌 엑셀 파일을 읽고 SQL VALUES 구문 생성하는 함수
 def generate_sql_from_excel():
@@ -225,9 +601,56 @@ company_entry = tk.Entry(company_frame, width=20)
 company_entry.pack(side=tk.LEFT, padx=(5, 0))
 company_entry.insert(0, "6")  # 기본값 6
 
+# ▶ DB 비밀번호 입력 프레임
+db_password_frame = tk.Frame(window)
+db_password_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+db_password_label = tk.Label(db_password_frame, text="DB 비밀번호:")
+db_password_label.pack(side=tk.LEFT)
+
+db_password_entry = tk.Entry(db_password_frame, width=20, show='*')
+db_password_entry.pack(side=tk.LEFT, padx=(5, 0))
+db_password_entry.insert(0, "mars@icbm")  # 기본값 설정
+
+# ▶ 매핑 조회 입력 프레임
+mapping_frame = tk.Frame(window)
+mapping_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+mapping_label = tk.Label(mapping_frame, text="매핑 조회 (여러 개 입력 가능 - 줄바꿈/쉼표 구분):")
+mapping_label.pack(anchor=tk.W)
+
+mapping_input_frame = tk.Frame(mapping_frame)
+mapping_input_frame.pack(fill=tk.BOTH, expand=True)
+
+mapping_search_text = tk.Text(mapping_input_frame, height=5, width=60)
+mapping_search_text.pack(side=tk.LEFT, padx=(0, 5))
+
+mapping_scrollbar = tk.Scrollbar(mapping_input_frame, command=mapping_search_text.yview)
+mapping_scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+mapping_search_text.config(yscrollcommand=mapping_scrollbar.set)
+
+# 매핑 관리 버튼 프레임
+mapping_buttons_frame = tk.Frame(mapping_frame)
+mapping_buttons_frame.pack(pady=(5, 0))
+
+mapping_search_btn = tk.Button(mapping_buttons_frame, text="조회", command=search_mapping, bg='#2196F3', fg='white', padx=15, pady=5)
+mapping_search_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+mapping_unlink_btn = tk.Button(mapping_buttons_frame, text="매핑해제", command=unlink_mapping, bg='#F44336', fg='white', padx=15, pady=5)
+mapping_unlink_btn.pack(side=tk.LEFT, padx=5)
+
+mapping_restore_btn = tk.Button(mapping_buttons_frame, text="매핑원복", command=restore_mapping, bg='#FF9800', fg='white', padx=15, pady=5)
+mapping_restore_btn.pack(side=tk.LEFT, padx=5)
+
 # ▶ 버튼 구성
-btn = tk.Button(window, text="엑셀 파일 선택 및 SQL 변환", command=generate_sql_from_excel)
-btn.pack(pady=10)
+button_frame = tk.Frame(window)
+button_frame.pack(pady=10)
+
+db_test_btn = tk.Button(button_frame, text="DB 연결 테스트", command=test_db_connection, bg='#4CAF50', fg='white', padx=10)
+db_test_btn.pack(side=tk.LEFT, padx=5)
+
+excel_btn = tk.Button(button_frame, text="엑셀 파일 선택 및 SQL 변환", command=generate_sql_from_excel, padx=10)
+excel_btn.pack(side=tk.LEFT, padx=5)
 
 # ▶ 결과 출력 프레임
 frame = tk.Frame(window)
@@ -247,6 +670,9 @@ result_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
 x_scrollbar.config(command=result_text.xview)
 y_scrollbar.config(command=result_text.yview)
+
+# ▶ 프로그램 시작 시 자동으로 DB 연결 테스트 실행 (500ms 후)
+window.after(500, test_db_connection)
 
 # ▶ 메인 루프 실행
 window.mainloop()
