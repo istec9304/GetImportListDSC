@@ -332,6 +332,165 @@ def unlink_mapping():
     except Exception as e:
         messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
 
+# 📌 매핑 생성 함수 (수용가번호-단말주번호 1:1 매핑)
+def create_mapping():
+    try:
+        # 비밀번호 가져오기
+        db_password = db_password_entry.get()
+        if not db_password:
+            messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
+            return
+        
+        # 검색어 가져오기
+        search_text = mapping_search_text.get("1.0", tk.END).strip()
+        if not search_text:
+            messagebox.showwarning("입력 오류", "수용가번호-단말주번호를 입력하세요.\n예: 2-001302290000,01236564855")
+            return
+        
+        # 입력값 파싱 (수용가번호-단말번호 또는 수용가번호,단말번호 형식)
+        lines = search_text.split('\n')
+        mapping_pairs = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # '-' 또는 ',' 또는 공백으로 구분
+            if ',' in line:
+                parts = line.split(',')
+            elif '-' in line and line.count('-') >= 2:  # 수용가번호에 이미 '-'가 있으므로 2개 이상일 때
+                # 마지막 '-'를 기준으로 분리
+                idx = line.rfind('-')
+                if idx > 0 and line[idx+1:].startswith('012'):  # 단말번호는 012로 시작
+                    parts = [line[:idx], line[idx+1:]]
+                else:
+                    parts = line.split()
+            else:
+                parts = line.split()
+            
+            if len(parts) >= 2:
+                admin_no = parts[0].strip()
+                dev_no = parts[1].strip()
+                
+                # 단말번호 검증 (012로 시작하는 11자리)
+                if dev_no.startswith('012') and len(dev_no) == 11:
+                    mapping_pairs.append((admin_no, dev_no))
+                else:
+                    messagebox.showwarning("입력 오류", f"잘못된 단말번호: {dev_no}\n단말번호는 012로 시작하는 11자리여야 합니다.")
+                    return
+        
+        if not mapping_pairs:
+            messagebox.showwarning("입력 오류", "유효한 매핑 쌍을 입력하세요.\n형식: 수용가번호,단말주번호 또는 수용가번호 단말주번호")
+            return
+        
+        # 확인 메시지
+        if not messagebox.askyesno("매핑 생성 확인", f"{len(mapping_pairs)}개의 매핑을 생성하시겠습니까?"):
+            return
+        
+        # DB 연결 설정
+        db_config = DB_CONFIG.copy()
+        db_config['password'] = db_password
+        
+        # DB 연결
+        connection = psycopg2.connect(**db_config)
+        cursor = connection.cursor()
+        
+        # 트리거 비활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
+        
+        # 1. 모든 단말번호가 매핑해제 상태인지 확인
+        dev_nos = [dev_no for _, dev_no in mapping_pairs]
+        placeholders = ','.join(['%s'] * len(dev_nos))
+        check_query = f"""
+            SELECT dev_no, point_sq 
+            FROM public.tb_m1_cmap_device 
+            WHERE dev_no IN ({placeholders})
+            AND point_sq IS NOT NULL;
+        """
+        cursor.execute(check_query, dev_nos)
+        already_mapped = cursor.fetchall()
+        
+        if already_mapped:
+            # 트리거 활성화
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            cursor.close()
+            connection.close()
+            
+            # 이미 매핑된 단말 목록 표시
+            mapped_list = "\n".join([f"  - {dev_no} (point_sq: {point_sq})" for dev_no, point_sq in already_mapped])
+            messagebox.showerror(
+                "매핑 오류", 
+                f"다음 단말번호는 이미 매핑되어 있습니다:\n\n{mapped_list}\n\n먼저 매핑해제를 진행하세요."
+            )
+            return
+        
+        # 2. 매핑 생성
+        created_count = 0
+        for admin_no, dev_no in mapping_pairs:
+            query = """
+                WITH point_to_update AS (
+                    SELECT c.admin_no, p.point_sq
+                    FROM public.tb_m1_info_point p
+                    JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                    WHERE c.admin_no = %s
+                )
+                UPDATE public.tb_m1_cmap_device AS dev
+                SET point_sq = ptu.point_sq
+                FROM point_to_update AS ptu
+                WHERE dev.dev_no = %s AND ptu.admin_no = %s;
+            """
+            cursor.execute(query, (admin_no, dev_no, admin_no))
+            created_count += cursor.rowcount
+        
+        # 3. 생성 후 상태를 백업 이력에 저장
+        if dev_nos:
+            placeholders = ','.join(['%s'] * len(dev_nos))
+            backup_query = f"""
+                INSERT INTO public.tb_m1_cmap_device_back_his 
+                (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
+                SELECT dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, 
+                       CURRENT_TIMESTAMP, TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), 'CREATE'
+                FROM public.tb_m1_cmap_device
+                WHERE dev_no IN ({placeholders})
+                AND point_sq IS NOT NULL;
+            """
+            cursor.execute(backup_query, dev_nos)
+        
+        # 트리거 활성화
+        cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+        
+        # 변경사항 커밋
+        connection.commit()
+        
+        # 결과 출력
+        result_text.config(state=tk.NORMAL)
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, f"✨ 매핑 생성 완료\n")
+        result_text.insert(tk.END, "="*80 + "\n\n")
+        result_text.insert(tk.END, f"✅ {created_count}개의 매핑이 생성되었습니다.\n\n")
+        result_text.insert(tk.END, f"📌 생성된 매핑:\n")
+        for admin_no, dev_no in mapping_pairs:
+            result_text.insert(tk.END, f"   {admin_no} ← {dev_no}\n")
+        result_text.insert(tk.END, f"\n💾 매핑 이력이 tb_m1_cmap_device_back_his에 저장되었습니다. (his_cd='CREATE')\n")
+        result_text.config(state=tk.DISABLED)
+        
+        cursor.close()
+        connection.close()
+        
+        messagebox.showinfo("매핑 생성 완료", f"{created_count}개의 매핑이 생성되었습니다.")
+        
+    except Error as e:
+        # 에러 발생 시 트리거 재활성화 시도
+        try:
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            connection.commit()
+        except:
+            pass
+        messagebox.showerror("DB 쿼리 오류", f"데이터베이스 쿼리 실패:\n{e}")
+    except Exception as e:
+        messagebox.showerror("오류 발생", f"예상치 못한 오류:\n{e}")
+
 # 📌 매핑원복 함수 (백업에서 원상태로 복원)
 def restore_mapping():
     try:
@@ -709,7 +868,7 @@ db_password_entry.insert(0, "mars@icbm")  # 기본값 설정
 mapping_frame = tk.Frame(window)
 mapping_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
-mapping_label = tk.Label(mapping_frame, text="매핑 조회 (여러 개 입력 가능 - 줄바꿈/쉼표 구분):")
+mapping_label = tk.Label(mapping_frame, text="매핑 관리 입력창:\n  조회/해제/원복: 수용가번호 또는 단말번호\n  생성: 수용가번호,단말번호 (예: 2-001302290000,01236564855)")
 mapping_label.pack(anchor=tk.W)
 
 mapping_input_frame = tk.Frame(mapping_frame)
@@ -728,6 +887,9 @@ mapping_buttons_frame.pack(pady=(5, 0))
 
 mapping_search_btn = tk.Button(mapping_buttons_frame, text="조회", command=search_mapping, bg='#2196F3', fg='white', padx=15, pady=5)
 mapping_search_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+mapping_create_btn = tk.Button(mapping_buttons_frame, text="매핑 생성", command=create_mapping, bg='#4CAF50', fg='white', padx=15, pady=5)
+mapping_create_btn.pack(side=tk.LEFT, padx=5)
 
 mapping_unlink_btn = tk.Button(mapping_buttons_frame, text="매핑해제", command=unlink_mapping, bg='#F44336', fg='white', padx=15, pady=5)
 mapping_unlink_btn.pack(side=tk.LEFT, padx=5)
