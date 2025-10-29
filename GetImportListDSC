@@ -664,13 +664,20 @@ def generate_sql_from_excel():
         messagebox.showwarning("파일 선택", "파일이 선택되지 않았습니다.")
         return
 
-    # ▶ 콤보박스에서 선택된 계정명의 수용가번호길이 가져오기
-    idx = site_combobox.current()
-    if idx < 0:
-        messagebox.showwarning("계정명 선택", "먼저 계정명을 선택하세요.")
+    # ▶ 입력된 계정명의 수용가번호길이 가져오기
+    selected_name = site_entry.get().strip()
+    if not selected_name:
+        messagebox.showwarning("계정명 선택", "먼저 계정명을 입력하세요.")
         return
+    
+    # filtered_df에서 선택된 계정명 찾기
+    matches = filtered_df[filtered_df['계정명'] == selected_name]
+    if matches.empty:
+        messagebox.showwarning("계정명 오류", f"'{selected_name}'은(는) 유효한 계정명이 아닙니다.")
+        return
+    
     try:
-        selected_num_len = int(filtered_df.iloc[idx]['수용가번호길이'])
+        selected_num_len = int(matches.iloc[0]['수용가번호길이'])
     except Exception:
         messagebox.showerror("계정명 오류", "선택한 계정의 수용가번호길이 값이 올바르지 않습니다.")
         return
@@ -777,20 +784,131 @@ def read_google_sheet(sheet_url, credentials_path, worksheet_name):
     gc = gspread.service_account(filename=credentials_path)
     sh = gc.open_by_url(sheet_url)
     worksheet = sh.worksheet(worksheet_name)
-    all_values = worksheet.get_all_values()
+    
+    # 데이터 범위를 명시적으로 지정 (A1부터 충분히 큰 범위까지)
+    all_values = worksheet.get('A1:Z1000')  # A1부터 Z열 1000행까지
+    
+    if not all_values:
+        return pd.DataFrame(columns=['계정명', '서비스코드', '수용가번호길이', '고객번호구조'])
+    
     # 첫 행에서 원하는 컬럼의 인덱스 찾기
     header = all_values[0]
-    idx_account = header.index('계정명')
+    
+    # 디버깅: 헤더 전체 출력
+    print(f"\n[DEBUG] 헤더 전체 ({len(header)}개 컬럼):")
+    for idx, col in enumerate(header):
+        if col:  # 비어있지 않은 컬럼만 출력
+            print(f"  {idx}: '{col}'")
+    
+    # 중복된 컬럼명 처리: 서비스코드 옆에 있는 계정명 사용
+    # 서비스코드를 먼저 찾고, 그 앞의 계정명을 사용
     idx_service = header.index('서비스코드')
     idx_len = header.index('수용가번호길이')
     idx_struct = header.index('고객번호구조')
-    # 원하는 컬럼만 추출
-    data = [
-        [row[idx_account], row[idx_service], row[idx_len], row[idx_struct]]
-        for row in all_values[1:]
-        if row[idx_account] and row[idx_service]
-    ]
+    
+    # 서비스코드 바로 앞 컬럼이 계정명인지 확인
+    if idx_service > 0 and header[idx_service - 1] == '계정명':
+        idx_account = idx_service - 1
+    else:
+        # 모든 '계정명' 컬럼 찾기
+        account_indices = [i for i, col in enumerate(header) if col == '계정명']
+        print(f"[DEBUG] '계정명' 컬럼 발견 위치: {account_indices}")
+        # 서비스코드에 가장 가까운 계정명 사용
+        idx_account = min(account_indices, key=lambda x: abs(x - idx_service))
+    
+    # 원하는 컬럼만 추출 (빈 행도 포함하여 모든 행 검사)
+    data = []
+    skipped = []
+    for i, row in enumerate(all_values[1:], start=2):
+        # 행이 비어있으면 건너뛰기
+        if not row or len(row) == 0:
+            continue
+        
+        # 각 컬럼 값 가져오기 (안전하게)
+        account = row[idx_account] if idx_account < len(row) else ''
+        service = row[idx_service] if idx_service < len(row) else ''
+        num_len = row[idx_len] if idx_len < len(row) else ''
+        struct = row[idx_struct] if idx_struct < len(row) else ''
+        
+        # 4개 필드 모두 값이 있는지 확인
+        if account and service and num_len and struct:
+            # 고객번호구조의 길이가 수용가번호길이와 일치하는지 검증
+            try:
+                expected_len = int(num_len)
+                actual_len = len(struct)
+                
+                if actual_len == expected_len:
+                    data.append([account, service, num_len, struct])
+                else:
+                    skipped.append(f"행 {i}: 계정명='{account}' - 길이 불일치 (수용가번호길이={expected_len}, 고객번호구조길이={actual_len}, 고객번호구조='{struct}')")
+            except ValueError:
+                skipped.append(f"행 {i}: 계정명='{account}' - 수용가번호길이가 숫자가 아님 ('{num_len}')")
+        else:
+            # 하나라도 비어있으면 건너뛰기 (디버깅용 기록)
+            if account or service or num_len or struct:  # 하나라도 값이 있으면 기록
+                skipped.append(f"행 {i}: 계정명='{account}', 서비스코드='{service}', 수용가번호길이='{num_len}', 고객번호구조='{struct}'")
+    
     df = pd.DataFrame(data, columns=['계정명', '서비스코드', '수용가번호길이', '고객번호구조'])
+    
+    # ============ 디버깅 정보 출력 ============
+    print("\n" + "="*80)
+    print("📊 Google Sheets 데이터 로딩 결과")
+    print("="*80)
+    print(f"전체 읽은 행 수: {len(all_values)-1}개")
+    print(f"✅ 유효한 계정명: {len(df)}개")
+    print(f"❌ 필터링된 행: {len(skipped)}개")
+    print(f"\n컬럼 인덱스: 계정명={idx_account}, 서비스코드={idx_service}, 수용가번호길이={idx_len}, 고객번호구조={idx_struct}")
+    
+    if skipped:
+        print(f"\n{'='*80}")
+        print(f"❌ 필터링된 행 목록 및 사유 ({len(skipped)}개)")
+        print(f"{'='*80}")
+        
+        # 사유별로 분류
+        reason_no_account = []
+        reason_no_service = []
+        reason_length_mismatch = []
+        reason_incomplete = []
+        reason_invalid_numlen = []
+        
+        for s in skipped:
+            if "계정명=''" in s and "서비스코드=''" not in s:
+                reason_no_account.append(s)
+            elif "서비스코드=''" in s:
+                reason_no_service.append(s)
+            elif "길이 불일치" in s:
+                reason_length_mismatch.append(s)
+            elif "숫자가 아님" in s:
+                reason_invalid_numlen.append(s)
+            else:
+                reason_incomplete.append(s)
+        
+        if reason_no_account:
+            print(f"\n[계정명 없음] ({len(reason_no_account)}개)")
+            for s in reason_no_account:
+                print(f"  {s}")
+        
+        if reason_no_service:
+            print(f"\n[서비스코드 없음] ({len(reason_no_service)}개)")
+            for s in reason_no_service:
+                print(f"  {s}")
+        
+        if reason_length_mismatch:
+            print(f"\n[고객번호구조 길이 불일치] ({len(reason_length_mismatch)}개)")
+            for s in reason_length_mismatch:
+                print(f"  {s}")
+        
+        if reason_invalid_numlen:
+            print(f"\n[수용가번호길이 형식 오류] ({len(reason_invalid_numlen)}개)")
+            for s in reason_invalid_numlen:
+                print(f"  {s}")
+        
+        if reason_incomplete:
+            print(f"\n[필드 누락] ({len(reason_incomplete)}개)")
+            for s in reason_incomplete:
+                print(f"  {s}")
+    
+    print(f"\n{'='*80}\n")
     return df
 
 # 사용 예시
@@ -837,29 +955,154 @@ site_label.pack(side=tk.LEFT)
 exclude_accounts = ['나라장터', '농촌공사', '로우리스', '']
 filtered_df = df[~df['계정명'].isin(exclude_accounts)].copy()
 filtered_df = filtered_df.sort_values('계정명').reset_index(drop=True)
-site_combobox = ttk.Combobox(site_frame, values=list(filtered_df['계정명']), state="readonly")
-site_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
-# 기본값 "경북포항" 설정
-try:
-    default_idx = filtered_df[filtered_df['계정명'] == '경북포항'].index[0]
-    site_combobox.current(default_idx)
-except (IndexError, KeyError):
-    pass  # 경북포항이 없으면 기본값 설정 안 함
+# 디버깅: 계정명 목록 출력
+print(f"[DEBUG] 로드된 계정명 개수: {len(filtered_df)}")
+print(f"[DEBUG] 계정명 목록:\n{filtered_df['계정명'].tolist()}")
 
-# 계정명 선택 시 4개 컬럼 정보 팝업
-def on_site_select(event):
-    idx = site_combobox.current()
-    if idx >= 0:
-        account_name = filtered_df.iloc[idx]['계정명']
-        service_code = filtered_df.iloc[idx]['서비스코드']
-        num_len = filtered_df.iloc[idx]['수용가번호길이']
-        struct = filtered_df.iloc[idx]['고객번호구조']
+# 전체 계정명 목록 저장 (검색용)
+all_account_names = list(filtered_df['계정명'])
+
+# 계정명 입력을 위한 프레임 (자동완성용)
+account_autocomplete_frame = tk.Frame(site_frame)
+account_autocomplete_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+# 계정명 입력창 (Entry 사용)
+site_entry = tk.Entry(account_autocomplete_frame)
+site_entry.pack(fill=tk.X)
+
+# 자동완성 리스트박스 (처음엔 숨김)
+site_listbox = tk.Listbox(account_autocomplete_frame, height=8)
+site_listbox.pack_forget()  # 처음엔 숨김
+
+# 선택된 계정명 저장 변수
+selected_account = tk.StringVar()
+
+# 계정명 자동완성 + 실시간 검색 + 동적 필터링 기능
+def update_autocomplete(event=None):
+    """타이핑할 때마다 실시간으로 필터링된 리스트 표시"""
+    # 특수 키 처리
+    if event:
+        if event.keysym == 'Down':
+            # 아래 화살표: 리스트박스로 포커스 이동
+            if site_listbox.size() > 0:
+                site_listbox.pack(fill=tk.BOTH, expand=True)
+                site_listbox.focus()
+                site_listbox.selection_clear(0, tk.END)
+                site_listbox.selection_set(0)
+                site_listbox.see(0)
+            return 'break'
+        elif event.keysym == 'Escape':
+            # ESC: 리스트박스 숨기기
+            site_listbox.pack_forget()
+            return 'break'
+        elif event.keysym in ['Return', 'Tab']:
+            # Enter/Tab 처리는 별도 함수에서
+            return
+        elif event.keysym in ['Up', 'Left', 'Right', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R']:
+            return
+    
+    # 현재 입력된 텍스트 가져오기
+    typed_text = site_entry.get()
+    
+    # 리스트박스 업데이트
+    site_listbox.delete(0, tk.END)
+    
+    if typed_text == '':
+        # 입력이 비어있으면 전체 목록 표시
+        for name in all_account_names:
+            site_listbox.insert(tk.END, name)
+    else:
+        # 입력된 텍스트를 포함하는 계정명만 필터링
+        typed_lower = typed_text.lower()
+        filtered = [name for name in all_account_names if typed_lower in name.lower()]
+        for name in filtered:
+            site_listbox.insert(tk.END, name)
+    
+    # 필터링 결과가 있으면 리스트박스 표시
+    if site_listbox.size() > 0:
+        site_listbox.pack(fill=tk.BOTH, expand=True)
+    else:
+        site_listbox.pack_forget()
+
+def on_account_enter(event):
+    """Enter 키: 첫 번째 항목 선택 또는 리스트박스에서 선택된 항목 적용"""
+    if site_listbox.winfo_viewable() and site_listbox.curselection():
+        # 리스트박스에서 선택된 항목
+        selection = site_listbox.get(site_listbox.curselection())
+        site_entry.delete(0, tk.END)
+        site_entry.insert(0, selection)
+        selected_account.set(selection)
+        site_listbox.pack_forget()
+    elif site_listbox.size() > 0:
+        # 리스트박스 첫 번째 항목
+        first_item = site_listbox.get(0)
+        site_entry.delete(0, tk.END)
+        site_entry.insert(0, first_item)
+        selected_account.set(first_item)
+        site_listbox.pack_forget()
+    return 'break'
+
+def on_listbox_select(event):
+    """리스트박스에서 항목 클릭 시"""
+    if site_listbox.curselection():
+        selection = site_listbox.get(site_listbox.curselection())
+        site_entry.delete(0, tk.END)
+        site_entry.insert(0, selection)
+        selected_account.set(selection)
+        site_listbox.pack_forget()
+        site_entry.focus()
+
+def on_listbox_key(event):
+    """리스트박스에서 키 입력 처리"""
+    if event.keysym == 'Return':
+        on_listbox_select(event)
+        return 'break'
+    elif event.keysym == 'Escape':
+        site_listbox.pack_forget()
+        site_entry.focus()
+        return 'break'
+
+# 계정명 변경 감지 (선택 시 정보 팝업)
+def show_account_info():
+    """선택된 계정명의 상세 정보 표시"""
+    selected_name = site_entry.get()
+    if not selected_name:
+        return
+    
+    # filtered_df에서 선택된 계정명 찾기
+    matches = filtered_df[filtered_df['계정명'] == selected_name]
+    if not matches.empty:
+        account_name = matches.iloc[0]['계정명']
+        service_code = matches.iloc[0]['서비스코드']
+        num_len = matches.iloc[0]['수용가번호길이']
+        struct = matches.iloc[0]['고객번호구조']
         messagebox.showinfo(
             "선택한 계정",
             f"계정명: {account_name}\n서비스코드: {service_code}\n수용가번호길이: {num_len}\n고객번호구조: {struct}"
         )
-site_combobox.bind('<<ComboboxSelected>>', on_site_select)
+
+# Enter 키로 선택 시 정보 표시 추가
+original_on_account_enter = on_account_enter
+def on_account_enter_with_info(event):
+    result = original_on_account_enter(event)
+    # Enter로 선택 완료 후 정보 표시
+    window.after(100, show_account_info)
+    return result
+
+# 이벤트 바인딩
+site_entry.bind('<KeyRelease>', update_autocomplete)
+site_entry.bind('<Return>', on_account_enter_with_info)
+site_listbox.bind('<Double-Button-1>', on_listbox_select)
+site_listbox.bind('<Return>', on_listbox_key)
+site_listbox.bind('<Escape>', on_listbox_key)
+
+# 기본값 "경북포항" 설정
+try:
+    site_entry.insert(0, '경북포항')
+    selected_account.set('경북포항')
+except Exception:
+    pass
 
 # ▶ 소속/단말회사 입력 프레임
 company_frame = tk.Frame(window)
