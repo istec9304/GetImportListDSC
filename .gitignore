@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 임시 변환 스크립트
+convert_to_ico.py
+convert_istec_icon.py
+

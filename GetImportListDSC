@@ -21,6 +21,8 @@ from tkinter import ttk
 import psycopg2
 from psycopg2 import Error
 import re
+import os
+import sys
 
 # 📌 PostgreSQL DB 연결 정보
 DB_CONFIG = {
@@ -807,6 +809,23 @@ df = read_google_sheet(sheet_url, credentials_path, worksheet_name)
 window = tk.Tk()
 window.title("임포트체커 (v240607)")
 window.geometry("1000x600")
+
+# 아이콘 설정
+try:
+    # exe로 실행되는지 확인
+    if getattr(sys, 'frozen', False):
+        # exe로 실행 중: _MEIPASS 경로 사용
+        icon_path = os.path.join(sys._MEIPASS, 'istec_icon.ico')
+    else:
+        # 일반 Python 실행: 현재 스크립트 경로 사용
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(script_dir, 'istec_icon.ico')
+    
+    if os.path.exists(icon_path):
+        window.iconbitmap(icon_path)
+except Exception as e:
+    # 아이콘 로드 실패 시 무시
+    pass
 
 # ▶ 계정명 콤보박스 프레임
 site_frame = tk.Frame(window)
