@@ -193,7 +193,7 @@ def search_mapping():
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq
                 FROM public.tb_m1_cmap_device d
                 LEFT JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 LEFT JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
@@ -207,7 +207,7 @@ def search_mapping():
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq
                 FROM public.tb_m1_cmap_device d
                 JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
@@ -236,15 +236,16 @@ def search_mapping():
         
         if all_results:
             result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n")
-            result_text.insert(tk.END, f"{'수용가번호':<20} {'단말부번호':<30} {'단말주번호':<15} {'point_sq':<10} {'cust_sq':<10}\n")
-            result_text.insert(tk.END, "-"*120 + "\n")
-            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq in all_results:
+            result_text.insert(tk.END, f"{'수용가번호':<20} {'단말부번호':<30} {'단말주번호':<15} {'point_sq':<10} {'cust_sq':<10} {'소속/단말회사':<12}\n")
+            result_text.insert(tk.END, "-"*130 + "\n")
+            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq, company_sq in all_results:
                 # NULL 값 처리
                 admin_no_str = admin_no if admin_no else 'NULL'
                 sub_dev_no_str = sub_dev_no if sub_dev_no else 'NULL'
                 point_sq_str = str(point_sq) if point_sq else 'NULL'
                 cust_sq_str = str(cust_sq) if cust_sq else 'NULL'
-                result_text.insert(tk.END, f"{admin_no_str:<20} {sub_dev_no_str:<30} {dev_no:<15} {point_sq_str:<10} {cust_sq_str:<10}\n")
+                company_sq_str = str(company_sq) if company_sq else 'NULL'
+                result_text.insert(tk.END, f"{admin_no_str:<20} {sub_dev_no_str:<30} {dev_no:<15} {point_sq_str:<10} {cust_sq_str:<10} {company_sq_str:<12}\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
         
@@ -532,7 +533,24 @@ def create_mapping():
             )
             return
         
-        # 2. 매핑 생성
+        # 소속/단말회사 값 가져오기
+        company_value = company_entry.get().strip()
+        if not company_value:
+            messagebox.showwarning("입력 오류", "소속/단말회사 값을 입력하세요.")
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            cursor.close()
+            connection.close()
+            return
+        try:
+            company_sq = int(company_value)
+        except ValueError:
+            messagebox.showerror("입력 오류", "소속/단말회사 값은 정수로 입력해야 합니다.")
+            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+            cursor.close()
+            connection.close()
+            return
+        
+        # 2. 매핑 생성 (point_sq와 company_sq 함께 설정)
         created_count = 0
         for admin_no, dev_no in mapping_pairs:
             query = """
@@ -543,11 +561,11 @@ def create_mapping():
                     WHERE c.admin_no = %s
                 )
                 UPDATE public.tb_m1_cmap_device AS dev
-                SET point_sq = ptu.point_sq
+                SET point_sq = ptu.point_sq, company_sq = %s
                 FROM point_to_update AS ptu
                 WHERE dev.dev_no = %s AND ptu.admin_no = %s;
             """
-            cursor.execute(query, (admin_no, dev_no, admin_no))
+            cursor.execute(query, (admin_no, company_sq, dev_no, admin_no))
             created_count += cursor.rowcount
         
         # 3. 생성 후 상태를 백업 이력에 저장
@@ -674,14 +692,14 @@ def restore_mapping():
             # 1. 복원 실행
             query = f"""
                 WITH latest_backup AS (
-                    SELECT DISTINCT ON (dev_no) dev_no, point_sq
+                    SELECT DISTINCT ON (dev_no) dev_no, point_sq, company_sq
                     FROM public.tb_m1_cmap_device_back_his
                     WHERE dev_no IN ({placeholders})
                     AND point_sq IS NOT NULL
                     ORDER BY dev_no, his_dt DESC, upd_dt DESC
                 )
                 UPDATE public.tb_m1_cmap_device AS dev
-                SET point_sq = lb.point_sq
+                SET point_sq = lb.point_sq, company_sq = lb.company_sq
                 FROM latest_backup AS lb
                 WHERE dev.dev_no = lb.dev_no;
             """
@@ -707,7 +725,7 @@ def restore_mapping():
             # 1. 복원 실행
             query = f"""
                 WITH latest_backup AS (
-                    SELECT DISTINCT ON (bak.dev_no) bak.dev_no, bak.point_sq
+                    SELECT DISTINCT ON (bak.dev_no) bak.dev_no, bak.point_sq, bak.company_sq
                     FROM public.tb_m1_cmap_device_back_his bak
                     JOIN public.tb_m1_info_point p ON bak.point_sq = p.point_sq
                     JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
@@ -716,7 +734,7 @@ def restore_mapping():
                     ORDER BY bak.dev_no, bak.his_dt DESC, bak.upd_dt DESC
                 )
                 UPDATE public.tb_m1_cmap_device AS dev
-                SET point_sq = lb.point_sq
+                SET point_sq = lb.point_sq, company_sq = lb.company_sq
                 FROM latest_backup AS lb
                 WHERE dev.dev_no = lb.dev_no;
             """
@@ -854,6 +872,10 @@ def generate_sql_from_excel():
                     if val == '':
                         raise ValueError(f"{col} 값이 비어있음")
                     return int(float(val))
+                # 단말 회사 값 처리 (엑셀에 값이 있으면 사용, 없으면 GUI 입력값 사용)
+                excel_company = row['단말 회사'].strip()
+                device_company_sq = int(excel_company) if excel_company and excel_company.isdigit() else company_sq
+                
                 values = (
                     row['수용가명'],
                     row['수용가번호'],
@@ -862,7 +884,7 @@ def generate_sql_from_excel():
                     safe_float(row['경도'], '경도'),
                     safe_float(row['위도'], '위도'),
                     row['업종'],
-                    company_sq,
+                    company_sq,  # 소속 (GUI 입력값)
                     row['블록'],
                     row['수용가 전화번호'],
                     row['수용가 대상 년도'],
@@ -873,7 +895,7 @@ def generate_sql_from_excel():
                     row['통신'],
                     row['단말 부번호'],
                     row['단말 주번호'],
-                    company_sq,
+                    device_company_sq,  # 단말 회사 (엑셀 값 우선, 없으면 GUI 입력값)
                     f"{pd.to_datetime(row['단말 설치일']).date()}"
                 )
                 # SQL VALUES 문자열 포맷팅
