@@ -193,10 +193,12 @@ def search_mapping():
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
+                       m.meas_dt, m.accu_iv, m.met_gau, m.dev_un
                 FROM public.tb_m1_cmap_device d
                 LEFT JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 LEFT JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                LEFT JOIN public.tb_m1_meas_now m ON d.point_sq = m.point_sq
                 WHERE d.dev_no IN ({placeholders});
             """
             cursor.execute(query, device_nos)
@@ -207,10 +209,12 @@ def search_mapping():
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq
+                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
+                       m.meas_dt, m.accu_iv, m.met_gau, m.dev_un
                 FROM public.tb_m1_cmap_device d
                 JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                LEFT JOIN public.tb_m1_meas_now m ON d.point_sq = m.point_sq
                 WHERE c.admin_no IN ({placeholders});
             """
             cursor.execute(query, admin_nos)
@@ -235,17 +239,29 @@ def search_mapping():
         result_text.insert(tk.END, f"{'='*120}\n\n")
         
         if all_results:
-            result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n")
-            result_text.insert(tk.END, f"{'수용가번호':<20} {'단말부번호':<30} {'단말주번호':<15} {'point_sq':<10} {'cust_sq':<10} {'소속/단말회사':<12}\n")
-            result_text.insert(tk.END, "-"*130 + "\n")
-            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq, company_sq in all_results:
+            result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n\n")
+            
+            # 헤더 출력 (고정 폭 포맷팅)
+            header = f"{'수용가번호':<18}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}"
+            result_text.insert(tk.END, header + "\n\n")
+            result_text.insert(tk.END, "-"*180 + "\n\n")
+            
+            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, met_gau, dev_un in all_results:
                 # NULL 값 처리
-                admin_no_str = admin_no if admin_no else 'NULL'
-                sub_dev_no_str = sub_dev_no if sub_dev_no else 'NULL'
-                point_sq_str = str(point_sq) if point_sq else 'NULL'
-                cust_sq_str = str(cust_sq) if cust_sq else 'NULL'
-                company_sq_str = str(company_sq) if company_sq else 'NULL'
-                result_text.insert(tk.END, f"{admin_no_str:<20} {sub_dev_no_str:<30} {dev_no:<15} {point_sq_str:<10} {cust_sq_str:<10} {company_sq_str:<12}\n")
+                admin_no_val = admin_no if admin_no else 'NULL'
+                sub_dev_no_val = sub_dev_no if sub_dev_no else 'NULL'
+                dev_no_val = dev_no if dev_no else 'NULL'
+                point_sq_val = str(point_sq) if point_sq else 'NULL'
+                cust_sq_val = str(cust_sq) if cust_sq else 'NULL'
+                company_sq_val = str(company_sq) if company_sq else 'NULL'
+                meas_dt_val = str(meas_dt) if meas_dt else 'NULL'
+                accu_iv_val = str(accu_iv) if accu_iv else 'NULL'
+                met_gau_val = met_gau if met_gau else 'NULL'
+                dev_un_val = dev_un if dev_un else 'NULL'
+                
+                # 고정 폭 포맷팅으로 출력
+                line = f"{admin_no_val:<18}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}"
+                result_text.insert(tk.END, line + "\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
         
@@ -1080,7 +1096,7 @@ df = read_google_sheet(sheet_url, credentials_path, worksheet_name)
 # =====================
 window = tk.Tk()
 window.title("임포트체커 (v251029)")
-window.geometry("1000x600")
+window.geometry("1500x900")
 
 # 아이콘 설정
 try:
@@ -1404,8 +1420,9 @@ x_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
 y_scrollbar = tk.Scrollbar(frame)
 y_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-# ▶ 결과 출력 텍스트창 (스크롤 가능)
-result_text = tk.Text(frame, wrap=tk.NONE, xscrollcommand=x_scrollbar.set, yscrollcommand=y_scrollbar.set)
+# ▶ 결과 출력 텍스트창 (스크롤 가능, 고정폭 폰트)
+result_text = tk.Text(frame, wrap=tk.NONE, xscrollcommand=x_scrollbar.set, yscrollcommand=y_scrollbar.set, 
+                     font=('Courier New', 10))
 result_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
 x_scrollbar.config(command=result_text.xview)
