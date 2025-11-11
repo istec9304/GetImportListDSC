@@ -104,7 +104,6 @@ def test_db_connection():
         tables = cursor.fetchall()
         
         # 결과 출력 (로그 형식)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
@@ -189,11 +188,11 @@ def search_mapping():
         # 결과를 딕셔너리로 저장 (검색 키별로)
         results_dict = {}
         
-        # 단말주번호로 조회
+        # 단말주번호로 조회 (수용가명 추가)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
+                SELECT c.admin_no, c.cust_name, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
                        m.meas_dt, m.accu_iv, m.met_gau, m.dev_un
                 FROM public.tb_m1_cmap_device d
                 LEFT JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
@@ -203,13 +202,13 @@ def search_mapping():
             """
             cursor.execute(query, device_nos)
             for row in cursor.fetchall():
-                results_dict[row[1]] = row  # dev_no를 키로 사용
+                results_dict[row[2]] = row  # dev_no를 키로 사용
         
-        # 수용가번호로 조회
+        # 수용가번호로 조회 (수용가명 추가)
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
             query = f"""
-                SELECT c.admin_no, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
+                SELECT c.admin_no, c.cust_name, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
                        m.meas_dt, m.accu_iv, m.met_gau, m.dev_un
                 FROM public.tb_m1_cmap_device d
                 JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
@@ -221,14 +220,17 @@ def search_mapping():
             for row in cursor.fetchall():
                 results_dict[row[0]] = row  # admin_no를 키로 사용
         
-        # 입력 순서대로 결과 정렬
-        all_results = []
+        # 입력 순서대로 결과 정렬 및 매핑 안된 것 분류
+        mapped_results = []
+        unmapped_values = []
+        
         for search_val in search_values:
             if search_val in results_dict:
-                all_results.append(results_dict[search_val])
+                mapped_results.append(results_dict[search_val])
+            else:
+                unmapped_values.append(search_val)
         
         # 결과 출력 (로그 형식 - 누적)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
@@ -238,17 +240,19 @@ def search_mapping():
         result_text.insert(tk.END, f"검색 항목: {len(search_values)}개 (단말주번호: {len(device_nos)}개, 수용가번호: {len(admin_nos)}개)\n")
         result_text.insert(tk.END, f"{'='*120}\n\n")
         
-        if all_results:
-            result_text.insert(tk.END, f"✅ {len(all_results)}개의 매핑 발견\n\n\n")
+        # ✅ 매핑된 데이터 출력
+        if mapped_results:
+            result_text.insert(tk.END, f"✅ {len(mapped_results)}개의 매핑 발견\n\n\n")
             
-            # 헤더 출력 (고정 폭 포맷팅)
-            header = f"{'수용가번호':<18}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}"
+            # 헤더 출력 (고정 폭 포맷팅 - 수용가명 추가)
+            header = f"{'수용가번호':<18}{'수용가명':<20}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}"
             result_text.insert(tk.END, header + "\n\n")
-            result_text.insert(tk.END, "-"*180 + "\n\n")
+            result_text.insert(tk.END, "-"*200 + "\n\n")
             
-            for admin_no, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, met_gau, dev_un in all_results:
+            for admin_no, cust_nm, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, met_gau, dev_un in mapped_results:
                 # NULL 값 처리
                 admin_no_val = admin_no if admin_no else 'NULL'
+                cust_nm_val = cust_nm if cust_nm else 'NULL'
                 sub_dev_no_val = sub_dev_no if sub_dev_no else 'NULL'
                 dev_no_val = dev_no if dev_no else 'NULL'
                 point_sq_val = str(point_sq) if point_sq else 'NULL'
@@ -260,10 +264,20 @@ def search_mapping():
                 dev_un_val = dev_un if dev_un else 'NULL'
                 
                 # 고정 폭 포맷팅으로 출력
-                line = f"{admin_no_val:<18}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}"
+                line = f"{admin_no_val:<18}{cust_nm_val:<20}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}"
                 result_text.insert(tk.END, line + "\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
+        
+        # ⚠️ 매핑 안된 데이터 출력
+        if unmapped_values:
+            result_text.insert(tk.END, f"\n\n{'='*120}\n")
+            result_text.insert(tk.END, f"⚠️ 매핑되지 않은 항목: {len(unmapped_values)}개\n")
+            result_text.insert(tk.END, f"{'='*120}\n\n")
+            for val in unmapped_values:
+                # 단말주번호인지 수용가번호인지 구분
+                val_type = "단말주번호" if val.startswith('012') and len(val) == 11 else "수용가번호"
+                result_text.insert(tk.END, f"  ❌ {val} ({val_type})\n")
         
         result_text.insert(tk.END, "\n")
         # 자동 스크롤 (최신 로그로)
@@ -412,7 +426,6 @@ def unlink_mapping():
         connection.commit()
         
         # 결과 출력 (로그 형식)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
@@ -456,7 +469,7 @@ def create_mapping():
             messagebox.showwarning("입력 오류", "수용가번호-단말주번호를 입력하세요.\n예: 2-001302290000,01236564855")
             return
         
-        # 입력값 파싱 (수용가번호-단말주번호 또는 수용가번호,단말주번호 형식)
+        # 입력값 파싱 (수용가번호,단말주번호[,단말부번호] 형식)
         lines = search_text.split('\n')
         mapping_pairs = []
         
@@ -481,16 +494,17 @@ def create_mapping():
             if len(parts) >= 2:
                 admin_no = parts[0].strip()
                 dev_no = parts[1].strip()
+                sub_dev_no = parts[2].strip() if len(parts) >= 3 else dev_no  # 단말부번호 없으면 단말주번호와 동일
                 
                 # 단말주번호 검증 (012로 시작하는 11자리)
                 if dev_no.startswith('012') and len(dev_no) == 11:
-                    mapping_pairs.append((admin_no, dev_no))
+                    mapping_pairs.append((admin_no, dev_no, sub_dev_no))
                 else:
                     messagebox.showwarning("입력 오류", f"잘못된 단말주번호: {dev_no}\n단말주번호는 012로 시작하는 11자리여야 합니다.")
                     return
         
         if not mapping_pairs:
-            messagebox.showwarning("입력 오류", "유효한 매핑 쌍을 입력하세요.\n형식: 수용가번호,단말주번호 또는 수용가번호 단말주번호")
+            messagebox.showwarning("입력 오류", "유효한 매핑 쌍을 입력하세요.\n형식: 수용가번호,단말주번호[,단말부번호]")
             return
         
         # 확인 메시지
@@ -516,6 +530,17 @@ def create_mapping():
             messagebox.showwarning("비밀번호 입력", "DB 비밀번호를 입력하세요.")
             return
         
+        # 소속/단말회사 값 가져오기 (단말 추가 시 필요)
+        company_value = company_entry.get().strip()
+        if not company_value:
+            messagebox.showwarning("입력 오류", "소속/단말회사 값을 입력하세요.")
+            return
+        try:
+            company_sq = int(company_value)
+        except ValueError:
+            messagebox.showerror("입력 오류", "소속/단말회사 값은 정수로 입력해야 합니다.")
+            return
+        
         # DB 연결
         connection = psycopg2.connect(**db_config)
         cursor = connection.cursor()
@@ -523,9 +548,122 @@ def create_mapping():
         # 트리거 비활성화
         cursor.execute("ALTER TABLE public.tb_m1_cmap_device DISABLE TRIGGER ALL;")
         
-        # 1. 모든 단말주번호가 매핑해제 상태인지 확인
-        dev_nos = [dev_no for _, dev_no in mapping_pairs]
+        # 1-1. 단말주번호와 단말부번호 확인 및 처리
+        dev_nos = [dev_no for _, dev_no, _ in mapping_pairs]
         placeholders = ','.join(['%s'] * len(dev_nos))
+        check_exist_query = f"""
+            SELECT dev_no, sub_dev_no, point_sq
+            FROM public.tb_m1_cmap_device 
+            WHERE dev_no IN ({placeholders});
+        """
+        cursor.execute(check_exist_query, dev_nos)
+        existing_devs = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}  # {dev_no: (sub_dev_no, point_sq)}
+        
+        # 처리할 단말 분류
+        missing_devs = []  # 새로 추가할 단말
+        update_devs = []   # sub_dev_no를 업데이트할 단말
+        
+        for admin_no, dev_no, sub_dev_no in mapping_pairs:
+            if dev_no not in existing_devs:
+                # 단말주번호가 존재하지 않음 -> 추가
+                missing_devs.append((admin_no, dev_no, sub_dev_no))
+            else:
+                existing_sub, existing_point = existing_devs[dev_no]
+                if existing_sub != sub_dev_no:
+                    # sub_dev_no가 다름 -> 업데이트 필요
+                    if existing_point is None:
+                        # 매핑되어 있지 않음 -> 업데이트 가능
+                        update_devs.append((admin_no, dev_no, existing_sub, sub_dev_no))
+                    else:
+                        # 매핑되어 있음 -> 오류
+                        cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+                        cursor.close()
+                        connection.close()
+                        messagebox.showerror(
+                            "단말부번호 변경 오류",
+                            f"단말주번호 {dev_no}는 이미 매핑되어 있습니다.\n현재 sub_dev_no: {existing_sub}\n변경하려는 sub_dev_no: {sub_dev_no}\n\n먼저 매핑해제를 진행하세요."
+                        )
+                        return
+        
+        # 단말 추가
+        if missing_devs:
+            missing_list = "\n".join([f"  - {dev_no} (sub: {sub_dev_no})" for _, dev_no, sub_dev_no in missing_devs])
+            if messagebox.askyesno(
+                "단말 자동 추가", 
+                f"다음 {len(missing_devs)}개의 단말주번호가 DB에 존재하지 않습니다:\n\n{missing_list}\n\n자동으로 추가하시겠습니까?\n(AMI 타입: LG)"
+            ):
+                for _, dev_no, sub_dev_no in missing_devs:
+                    insert_query = """
+                        INSERT INTO public.tb_m1_cmap_device 
+                        (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt)
+                        VALUES (%s, %s, NULL, %s, 'LG', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT (dev_no, sub_dev_no) DO NOTHING;
+                    """
+                    cursor.execute(insert_query, (dev_no, sub_dev_no, company_sq))
+                connection.commit()
+                
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                result_text.config(state=tk.NORMAL)
+                result_text.insert(tk.END, f"\n{'='*120}\n")
+                result_text.insert(tk.END, f"➕ 단말 자동 추가 - {current_time}\n")
+                result_text.insert(tk.END, f"{'='*120}\n\n")
+                result_text.insert(tk.END, f"✅ {len(missing_devs)}개의 단말이 추가되었습니다.\n\n")
+                for _, dev_no, sub_dev_no in missing_devs:
+                    result_text.insert(tk.END, f"   ✅ {dev_no} (sub: {sub_dev_no}, ami_type: LG, company_sq: {company_sq})\n")
+                result_text.insert(tk.END, "\n")
+                result_text.see(tk.END)
+                result_text.config(state=tk.DISABLED)
+            else:
+                cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+                cursor.close()
+                connection.close()
+                return
+        
+        # 단말부번호 업데이트
+        if update_devs:
+            update_list = "\n".join([f"  - {dev_no}\n    기존: {old_sub}\n    변경: {new_sub}" 
+                                    for _, dev_no, old_sub, new_sub in update_devs])
+            if messagebox.askyesno(
+                "단말부번호 업데이트", 
+                f"다음 {len(update_devs)}개의 단말부번호를 업데이트하시겠습니까?\n\n{update_list}"
+            ):
+                for _, dev_no, old_sub, new_sub in update_devs:
+                    # 기존 레코드 삭제
+                    delete_query = """
+                        DELETE FROM public.tb_m1_cmap_device 
+                        WHERE dev_no = %s AND sub_dev_no = %s;
+                    """
+                    cursor.execute(delete_query, (dev_no, old_sub))
+                    
+                    # 새 레코드 삽입
+                    insert_query = """
+                        INSERT INTO public.tb_m1_cmap_device 
+                        (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt)
+                        VALUES (%s, %s, NULL, %s, 'LG', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                    """
+                    cursor.execute(insert_query, (dev_no, new_sub, company_sq))
+                connection.commit()
+                
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                result_text.config(state=tk.NORMAL)
+                result_text.insert(tk.END, f"\n{'='*120}\n")
+                result_text.insert(tk.END, f"🔄 단말부번호 업데이트 - {current_time}\n")
+                result_text.insert(tk.END, f"{'='*120}\n\n")
+                result_text.insert(tk.END, f"✅ {len(update_devs)}개의 단말부번호가 업데이트되었습니다.\n\n")
+                for _, dev_no, old_sub, new_sub in update_devs:
+                    result_text.insert(tk.END, f"   ✅ {dev_no}\n")
+                    result_text.insert(tk.END, f"      기존: {old_sub}\n")
+                    result_text.insert(tk.END, f"      변경: {new_sub}\n")
+                result_text.insert(tk.END, "\n")
+                result_text.see(tk.END)
+                result_text.config(state=tk.DISABLED)
+            else:
+                cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
+                cursor.close()
+                connection.close()
+                return
+        
+        # 1-2. 모든 단말주번호가 매핑해제 상태인지 확인
         check_query = f"""
             SELECT dev_no, point_sq 
             FROM public.tb_m1_cmap_device 
@@ -549,26 +687,26 @@ def create_mapping():
             )
             return
         
-        # 소속/단말회사 값 가져오기
-        company_value = company_entry.get().strip()
-        if not company_value:
-            messagebox.showwarning("입력 오류", "소속/단말회사 값을 입력하세요.")
-            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
-            cursor.close()
-            connection.close()
-            return
-        try:
-            company_sq = int(company_value)
-        except ValueError:
-            messagebox.showerror("입력 오류", "소속/단말회사 값은 정수로 입력해야 합니다.")
-            cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
-            cursor.close()
-            connection.close()
-            return
-        
-        # 2. 매핑 생성 (point_sq와 company_sq 함께 설정)
+        # 2. 매핑 생성 (point_sq와 company_sq 함께 설정) + 실패 사유 추적
         created_count = 0
-        for admin_no, dev_no in mapping_pairs:
+        success_list = []
+        fail_list = []
+        
+        for admin_no, dev_no, sub_dev_no in mapping_pairs:
+            # 2-1. 수용가번호 존재 여부 확인
+            cursor.execute("""
+                SELECT p.point_sq 
+                FROM public.tb_m1_info_point p
+                JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
+                WHERE c.admin_no = %s;
+            """, (admin_no,))
+            point_result = cursor.fetchone()
+            
+            if not point_result:
+                fail_list.append((admin_no, dev_no, "수용가번호가 DB에 존재하지 않음"))
+                continue
+            
+            # 2-2. 매핑 생성 (단말은 이미 존재함이 확인됨)
             query = """
                 WITH point_to_update AS (
                     SELECT c.admin_no, p.point_sq
@@ -582,11 +720,17 @@ def create_mapping():
                 WHERE dev.dev_no = %s AND ptu.admin_no = %s;
             """
             cursor.execute(query, (admin_no, company_sq, dev_no, admin_no))
-            created_count += cursor.rowcount
+            
+            if cursor.rowcount > 0:
+                created_count += cursor.rowcount
+                success_list.append((admin_no, dev_no))
+            else:
+                fail_list.append((admin_no, dev_no, "매핑 업데이트 실패 (알 수 없는 이유)"))
         
-        # 3. 생성 후 상태를 백업 이력에 저장
-        if dev_nos:
-            placeholders = ','.join(['%s'] * len(dev_nos))
+        # 3. 생성 후 상태를 백업 이력에 저장 (성공한 것만)
+        if success_list:
+            success_dev_nos = [dev_no for _, dev_no in success_list]
+            placeholders = ','.join(['%s'] * len(success_dev_nos))
             backup_query = f"""
                 INSERT INTO public.tb_m1_cmap_device_back_his 
                 (dev_no, sub_dev_no, point_sq, company_sq, ami_type, ins_dt, upd_dt, his_dt, his_cd)
@@ -596,7 +740,7 @@ def create_mapping():
                 WHERE dev_no IN ({placeholders})
                 AND point_sq IS NOT NULL;
             """
-            cursor.execute(backup_query, dev_nos)
+            cursor.execute(backup_query, success_dev_nos)
         
         # 트리거 활성화
         cursor.execute("ALTER TABLE public.tb_m1_cmap_device ENABLE TRIGGER ALL;")
@@ -605,25 +749,45 @@ def create_mapping():
         connection.commit()
         
         # 결과 출력 (로그 형식)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
         result_text.insert(tk.END, f"\n{'='*120}\n")
         result_text.insert(tk.END, f"✨ 매핑 생성 완료 - {current_time}\n")
         result_text.insert(tk.END, f"{'='*120}\n\n")
-        result_text.insert(tk.END, f"✅ {created_count}개의 매핑이 생성되었습니다.\n\n")
-        result_text.insert(tk.END, f"📌 생성된 매핑:\n")
-        for admin_no, dev_no in mapping_pairs:
-            result_text.insert(tk.END, f"   {admin_no} ← {dev_no}\n")
-        result_text.insert(tk.END, f"\n💾 백업 이력 저장 (his_cd='CREATE')\n\n")
+        result_text.insert(tk.END, f"✅ 성공: {created_count}개 | ❌ 실패: {len(fail_list)}개 (총 {len(mapping_pairs)}개)\n\n")
+        
+        # 성공한 매핑 출력
+        if success_list:
+            result_text.insert(tk.END, f"📌 생성 성공:\n")
+            for admin_no, dev_no in success_list:
+                result_text.insert(tk.END, f"   ✅ {admin_no} ← {dev_no}\n")
+            result_text.insert(tk.END, "\n")
+        
+        # 실패한 매핑 출력
+        if fail_list:
+            result_text.insert(tk.END, f"❌ 생성 실패:\n")
+            for admin_no, dev_no, reason in fail_list:
+                result_text.insert(tk.END, f"   ❌ {admin_no} ← {dev_no}\n")
+                result_text.insert(tk.END, f"      사유: {reason}\n")
+            result_text.insert(tk.END, "\n")
+        
+        if created_count > 0:
+            result_text.insert(tk.END, f"💾 백업 이력 저장 (his_cd='CREATE')\n\n")
+        
         result_text.see(tk.END)
         result_text.config(state=tk.DISABLED)
         
         cursor.close()
         connection.close()
         
-        messagebox.showinfo("매핑 생성 완료", f"{created_count}개의 매핑이 생성되었습니다.")
+        # 성공/실패 메시지 표시
+        if created_count > 0 and len(fail_list) == 0:
+            messagebox.showinfo("매핑 생성 완료", f"✅ {created_count}개의 매핑이 모두 생성되었습니다!")
+        elif created_count > 0 and len(fail_list) > 0:
+            messagebox.showwarning("매핑 생성 부분 완료", f"✅ 성공: {created_count}개\n❌ 실패: {len(fail_list)}개\n\n실패 사유는 결과창에서 확인하세요.")
+        else:
+            messagebox.showerror("매핑 생성 실패", f"❌ 모든 매핑이 실패했습니다 ({len(fail_list)}개)\n\n실패 사유는 결과창에서 확인하세요.")
         
     except Error as e:
         # 에러 발생 시 트리거 재활성화 시도
@@ -785,7 +949,6 @@ def restore_mapping():
         connection.commit()
         
         # 결과 출력 (로그 형식)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
@@ -924,7 +1087,6 @@ def generate_sql_from_excel():
                 fail_count += 1
 
         # 결과 출력 (로그 형식)
-        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         result_text.config(state=tk.NORMAL)
@@ -1358,7 +1520,7 @@ db_password_entry.insert(0, "mars@icbm")  # 기본값 설정
 mapping_frame = tk.Frame(window)
 mapping_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
-mapping_label = tk.Label(mapping_frame, text="매핑 관리 입력창:\n  조회/해제/원복: 수용가번호 또는 단말주번호\n  생성: 수용가번호,단말주번호 (예: 2-001302290000,01236564855)")
+mapping_label = tk.Label(mapping_frame, text="매핑 관리 입력창:\n  조회/해제/원복: 수용가번호 또는 단말주번호\n  생성: 수용가번호,단말주번호[,단말부번호] (예: 2-001302290000,01236564855,ASN_CSE-D-xxx)\n        * 단말부번호 생략 시 단말주번호와 동일하게 설정\n        * 단말주번호가 DB에 없으면 자동 추가 (AMI 타입: LG)")
 mapping_label.pack(anchor=tk.W)
 
 mapping_input_frame = tk.Frame(mapping_frame)
