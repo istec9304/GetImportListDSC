@@ -244,10 +244,10 @@ def search_mapping():
         if mapped_results:
             result_text.insert(tk.END, f"✅ {len(mapped_results)}개의 매핑 발견\n\n\n")
             
-            # 헤더 출력 (고정 폭 포맷팅 - 수용가명 추가)
-            header = f"{'수용가번호':<18}{'수용가명':<20}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}"
+            # 헤더 출력 (고정 폭 포맷팅 - 수용가명, 통신상태 추가)
+            header = f"{'수용가번호':<18}{'수용가명':<20}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}{'통신상태':<12}"
             result_text.insert(tk.END, header + "\n\n")
-            result_text.insert(tk.END, "-"*200 + "\n\n")
+            result_text.insert(tk.END, "-"*212 + "\n\n")
             
             for admin_no, cust_nm, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, met_gau, dev_un in mapped_results:
                 # NULL 값 처리
@@ -263,8 +263,16 @@ def search_mapping():
                 met_gau_val = met_gau if met_gau else 'NULL'
                 dev_un_val = dev_un if dev_un else 'NULL'
                 
+                # 통신상태 판단
+                if meas_dt is None:
+                    comm_status = "통신장애"
+                elif accu_iv is None or met_gau is None or dev_un is None:
+                    comm_status = "계량기장애"
+                else:
+                    comm_status = "정상"
+                
                 # 고정 폭 포맷팅으로 출력
-                line = f"{admin_no_val:<18}{cust_nm_val:<20}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}"
+                line = f"{admin_no_val:<18}{cust_nm_val:<20}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}{comm_status:<12}"
                 result_text.insert(tk.END, line + "\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
