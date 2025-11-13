@@ -188,17 +188,24 @@ def search_mapping():
         # 결과를 딕셔너리로 저장 (검색 키별로)
         results_dict = {}
         
-        # 단말주번호로 조회 (수용가명, 위지트등록 추가)
+        # 단말주번호로 조회 (수용가명, 위지트등록, 펌웨어 추가)
         if device_nos:
             placeholders = ','.join(['%s'] * len(device_nos))
             query = f"""
                 SELECT c.admin_no, c.cust_name, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
-                       m.meas_dt, m.accu_iv, m.met_gau, m.dev_un,
+                       m.meas_dt, m.accu_iv, raw.fw_ver, m.met_gau, m.dev_un,
                        CASE WHEN w.sub_dev_no IS NOT NULL THEN '등록' ELSE '미등록' END AS wizit_status
                 FROM public.tb_m1_cmap_device d
                 LEFT JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 LEFT JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
                 LEFT JOIN public.tb_m1_meas_now m ON d.point_sq = m.point_sq
+                LEFT JOIN LATERAL (
+                    SELECT fw_ver
+                    FROM public.tb_m1_meas_raw
+                    WHERE point_sq = d.point_sq
+                    ORDER BY meas_dt DESC NULLS LAST
+                    LIMIT 1
+                ) raw ON true
                 LEFT JOIN public.tb_m1_wizit_modem_info w ON d.sub_dev_no = w.sub_dev_no
                 WHERE d.dev_no IN ({placeholders});
             """
@@ -206,17 +213,24 @@ def search_mapping():
             for row in cursor.fetchall():
                 results_dict[row[2]] = row  # dev_no를 키로 사용
         
-        # 수용가번호로 조회 (수용가명, 위지트등록 추가)
+        # 수용가번호로 조회 (수용가명, 위지트등록, 펌웨어 추가)
         if admin_nos:
             placeholders = ','.join(['%s'] * len(admin_nos))
             query = f"""
                 SELECT c.admin_no, c.cust_name, d.dev_no, d.sub_dev_no, d.point_sq, p.cust_sq, d.company_sq,
-                       m.meas_dt, m.accu_iv, m.met_gau, m.dev_un,
+                       m.meas_dt, m.accu_iv, raw.fw_ver, m.met_gau, m.dev_un,
                        CASE WHEN w.sub_dev_no IS NOT NULL THEN '등록' ELSE '미등록' END AS wizit_status
                 FROM public.tb_m1_cmap_device d
                 JOIN public.tb_m1_info_point p ON d.point_sq = p.point_sq
                 JOIN public.tb_m1_info_customer c ON p.cust_sq = c.cust_sq
                 LEFT JOIN public.tb_m1_meas_now m ON d.point_sq = m.point_sq
+                LEFT JOIN LATERAL (
+                    SELECT fw_ver
+                    FROM public.tb_m1_meas_raw
+                    WHERE point_sq = d.point_sq
+                    ORDER BY meas_dt DESC NULLS LAST
+                    LIMIT 1
+                ) raw ON true
                 LEFT JOIN public.tb_m1_wizit_modem_info w ON d.sub_dev_no = w.sub_dev_no
                 WHERE c.admin_no IN ({placeholders});
             """
@@ -248,12 +262,12 @@ def search_mapping():
         if mapped_results:
             result_text.insert(tk.END, f"✅ {len(mapped_results)}개의 매핑 발견\n\n\n")
             
-            # 헤더 출력 (고정 폭 포맷팅 - 위지트등록, 수용가명 맨뒤)
-            header = f"{'수용가번호':<18}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'구경':<12}{'계량기번호':<15}{'통신상태':<12}{'위지트등록':<12}{'수용가명':<20}"
+            # 헤더 출력 (고정 폭 포맷팅 - 펌웨어, 위지트등록, 수용가명 맨뒤)
+            header = f"{'수용가번호':<18}{'단말부번호':<33}{'단말주번호':<14}{'point_sq':<11}{'cust_sq':<11}{'회사':<8}{'검침일시':<22}{'적산':<16}{'펌웨어':<10}{'구경':<12}{'계량기번호':<15}{'통신상태':<12}{'위지트등록':<12}{'수용가명':<20}"
             result_text.insert(tk.END, header + "\n\n")
-            result_text.insert(tk.END, "-"*224 + "\n\n")
+            result_text.insert(tk.END, "-"*234 + "\n\n")
             
-            for admin_no, cust_nm, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, met_gau, dev_un, wizit_status in mapped_results:
+            for admin_no, cust_nm, dev_no, sub_dev_no, point_sq, cust_sq, company_sq, meas_dt, accu_iv, fw_ver, met_gau, dev_un, wizit_status in mapped_results:
                 # NULL 값 처리
                 admin_no_val = admin_no if admin_no else 'NULL'
                 cust_nm_val = cust_nm if cust_nm else 'NULL'
@@ -264,6 +278,7 @@ def search_mapping():
                 company_sq_val = str(company_sq) if company_sq else 'NULL'
                 meas_dt_val = str(meas_dt) if meas_dt else 'NULL'
                 accu_iv_val = str(accu_iv) if accu_iv else 'NULL'
+                fw_ver_val = str(fw_ver) if fw_ver else 'NULL'
                 met_gau_val = met_gau if met_gau else 'NULL'
                 dev_un_val = dev_un if dev_un else 'NULL'
                 wizit_status_val = wizit_status if wizit_status else '미등록'
@@ -276,8 +291,8 @@ def search_mapping():
                 else:
                     comm_status = "정상"
                 
-                # 고정 폭 포맷팅으로 출력 (위지트등록, 수용가명 맨뒤)
-                line = f"{admin_no_val:<18}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{met_gau_val:<12}{dev_un_val:<15}{comm_status:<12}{wizit_status_val:<12}{cust_nm_val:<20}"
+                # 고정 폭 포맷팅으로 출력 (펌웨어, 위지트등록, 수용가명 맨뒤)
+                line = f"{admin_no_val:<18}{sub_dev_no_val:<33}{dev_no_val:<14}{point_sq_val:<11}{cust_sq_val:<11}{company_sq_val:<8}{meas_dt_val:<22}{accu_iv_val:<16}{fw_ver_val:<10}{met_gau_val:<12}{dev_un_val:<15}{comm_status:<12}{wizit_status_val:<12}{cust_nm_val:<20}"
                 result_text.insert(tk.END, line + "\n")
         else:
             result_text.insert(tk.END, "❌ 매핑된 데이터가 없습니다.\n")
